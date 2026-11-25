@@ -86,8 +86,20 @@ class Signer:
 
     @property
     def public_key_b64(self) -> str:
-        raw = self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
-        return base64.b64encode(raw).decode()
+        return base64.b64encode(self._public_raw()).decode()
+
+    @property
+    def key_id(self) -> str:
+        """Short fingerprint of the public key (first 8 bytes of its SHA-256).
+
+        Stored next to each signature so that after a key rotation we know
+        which key signed an old image. It is a *label*, not a trust anchor:
+        verification always uses the key we hold, never one read from the file.
+        """
+        return hashlib.sha256(self._public_raw()).hexdigest()[:16]
+
+    def _public_raw(self) -> bytes:
+        return self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
 def generate_key_b64() -> str:
