@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     # printing settings shows '**********' instead of the key.
     signing_key: SecretStr | None = None
 
+    # Upload limits. The byte cap stops huge uploads; the pixel cap stops
+    # "decompression bombs" (a tiny file that decodes to gigabytes of pixels).
+    max_upload_bytes: int = 10 * 1024 * 1024  # 10 MB
+    max_image_pixels: int = 40_000_000  # ~40 megapixels
+
 
 @lru_cache
 def get_settings() -> Settings:
