@@ -13,6 +13,7 @@ from app.crypto import generate_key_b64
 from app.detector import run_detector
 from app.main import create_app, get_detector, get_store
 from app.store import RecordedDetection, SealRecord, SealStore
+from tests.conftest import keyed_client
 from tests.test_detector import CrashingDetector, FixedDetector
 
 
@@ -33,7 +34,7 @@ def make_client(db, detector=None, **settings_kw) -> TestClient:
     app.dependency_overrides[get_settings] = lambda: settings
     if detector is not None:
         app.dependency_overrides[get_detector] = lambda: detector
-    return TestClient(app)
+    return keyed_client(app, db)
 
 
 def seal(client, data=None):

@@ -15,6 +15,7 @@ from app.main import create_app
 from app.seal import seal_image
 from app.store import SealRecord, SealStore, utc_now
 from app.verify import Reason, Status, verify_image
+from tests.conftest import keyed_client
 
 
 # ---------- helpers ----------
@@ -256,7 +257,7 @@ def client(tmp_path):
     settings = Settings(_env_file=None, signing_key=generate_key_b64(), db_path=str(tmp_path / "api.db"))
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
-    return TestClient(app)
+    return keyed_client(app, settings.db_path)
 
 
 def upload(client, path, data: bytes, name="x.png"):
@@ -273,7 +274,7 @@ def test_api_seal_then_verify_round_trip(client):
     assert body["status"] == "sealed_intact"
     assert body["reason"] is None
     assert body["seal"]["seal_id"] == seal_id
-    assert body["seal"]["owner"] == "anonymous"
+    assert body["seal"]["owner"] == "alice"
     assert body["seal"] == client.get(f"/seals/{seal_id}").json()
 
 

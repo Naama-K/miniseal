@@ -4,10 +4,12 @@ import re
 from datetime import datetime
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Response, Security, UploadFile, status
+from fastapi.security import APIKeyHeader
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+from app.auth import ApiKeyStore
 from app.config import Settings, get_settings
 from app.crypto import Signer, SigningKeyError, pixel_hash
 from app.detector import Detector, DetectorRun, DummyDetector, Label, run_detector
@@ -49,11 +51,39 @@ def get_detector() -> Detector:
     return DummyDetector()
 
 
-def get_owner() -> str:
-    """Who is making the request. Placeholder until API keys exist (task 7),
-    which will replace this one function with a lookup of the caller's key.
-    Endpoints already depend on it, so they won't change then."""
-    return "anonymous"
+@lru_cache
+def _key_store_for(path: str) -> ApiKeyStore:
+    return ApiKeyStore(path)
+
+
+def get_key_store(settings: Settings = Depends(get_settings)) -> ApiKeyStore:
+    return _key_store_for(settings.db_path)
+
+
+# auto_error=False: we raise our own 401 (FastAPI's default is 403, which
+# means "I know who you are and you may not", the wrong answer for "who are you?").
+# Declaring it with Security also adds the "Authorize" button to /docs.
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)")
+
+
+def get_owner(
+    key: str | None = Security(api_key_header),
+    keys: ApiKeyStore = Depends(get_key_store),
+) -> str:
+    """Who is calling, from their API key. 401 if missing, wrong or revoked.
+
+    One message for all three: the answer must not tell an attacker whether
+    a key exists or was revoked. (Our own logs can tell them apart.)
+    """
+    owner = keys.owner_for(key) if key else None
+    if owner is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "missing or invalid API key (send it in the X-API-Key header)",
+            # 401 must say how to authenticate (RFC 9110).
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return owner
 
 
 class DetectionAtSeal(BaseModel):
@@ -258,11 +288,19 @@ def create_app() -> FastAPI:
         return Response(content=sealed, media_type="image/png", headers=headers)
 
     @app.get("/seals/{seal_id}", tags=["seal"], response_model=SealInfo)
-    def get_seal(seal_id: str, store: SealStore = Depends(get_store)) -> SealInfo:
+    def get_seal(
+        seal_id: str,
+        store: SealStore = Depends(get_store),
+        owner: str = Depends(get_owner),
+    ) -> SealInfo:
         # Plain `def`: FastAPI runs it in the threadpool, so the blocking
         # SQLite read doesn't stall the event loop.
         record = store.get(seal_id)
-        if record is None:
+        # Someone else's seal gets the SAME 404 as a missing one. A 403 would
+        # confirm "this seal exists, it just isn't yours". Anyone holding the
+        # image can still learn the owner through /verify: that's the point
+        # of a seal, and it needs the image, not just an id.
+        if record is None or record.owner != owner:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no seal with this id")
         return SealInfo.from_record(record)
 
