@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024  # 10 MB
     max_image_pixels: int = 40_000_000  # ~40 megapixels
 
+    # SQLite file for the seal registry. Relative paths resolve against the
+    # working directory; in Docker this points into a mounted volume.
+    db_path: str = "miniseal.db"
+
 
 @lru_cache
 def get_settings() -> Settings:
