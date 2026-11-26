@@ -18,7 +18,6 @@ from app.store import SealRecord, SealStore, utc_now
 from app.verify import Reason, Status, verify_image
 from tests.conftest import keyed_client
 
-
 # ---------- helpers ----------
 
 

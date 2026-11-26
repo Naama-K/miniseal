@@ -2,7 +2,7 @@
 
 import io
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,12 +43,16 @@ def seal(client, data=None):
 
 
 def rows(db, table="seals") -> int:
+    # A table name can't be a ? placeholder, so it goes into the SQL text:
+    # allow only known names, never arbitrary input.
+    if table not in ("seals", "detections"):
+        raise ValueError(f"unknown table {table!r}")
     with sqlite3.connect(db) as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
 
 
 def record(seal_id="a" * 32, pixel_hash="ab" * 32) -> SealRecord:
-    return SealRecord(seal_id, pixel_hash, "k", "alice", datetime.now(timezone.utc))
+    return SealRecord(seal_id, pixel_hash, "k", "alice", datetime.now(UTC))
 
 
 def a_run(detector=None, threshold=0.5):

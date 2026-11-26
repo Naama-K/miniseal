@@ -1,7 +1,7 @@
 import base64
 import io
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -149,9 +149,9 @@ def db_rows(client) -> int:
 
 
 def test_sealed_image_is_registered_and_retrievable(client):
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     resp = post(client, image_bytes())
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     payload = extract(load_image(resp.content))
 
     info = client.get(f"/seals/{payload.seal_id}")

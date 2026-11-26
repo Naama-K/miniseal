@@ -129,7 +129,7 @@ class Signer:
         self._public_key: Ed25519PublicKey = private_key.public_key()
 
     @classmethod
-    def from_b64(cls, key_b64: str | None) -> "Signer":
+    def from_b64(cls, key_b64: str | None) -> Signer:
         """Load from a base64-encoded 32-byte Ed25519 seed (the env var format)."""
         if not key_b64:
             raise SigningKeyError("MINISEAL_SIGNING_KEY is not set. Generate one with: python -m app.crypto")

@@ -4,7 +4,6 @@ import io
 import math
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import ValidationError
 
@@ -173,7 +172,10 @@ def test_sealing_does_not_change_the_detector_score(tmp_path):
     client = make_client(tmp_path)
     original = png(photo())
     sealed = upload(client, "/seal", original).content
-    score = lambda d: upload(client, "/verify", d).json()["detector"]["score"]
+
+    def score(data):
+        return upload(client, "/verify", data).json()["detector"]["score"]
+
     assert score(original) == score(sealed)
 
 

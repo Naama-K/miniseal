@@ -138,7 +138,7 @@ class SealInfo(BaseModel):
     detector_at_seal: DetectionAtSeal | None = None
 
     @classmethod
-    def from_record(cls, record: SealRecord) -> "SealInfo":
+    def from_record(cls, record: SealRecord) -> SealInfo:
         d = record.detection
         return cls(
             seal_id=record.seal_id,

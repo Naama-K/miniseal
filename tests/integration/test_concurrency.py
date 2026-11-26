@@ -41,7 +41,10 @@ def test_parallel_seals_and_verifies_stay_consistent(server):
     # The database agrees: no lost writes, no seal without its verdict.
     total_seals = CUSTOMERS * SEALS_EACH + 1
     with sqlite3.connect(server.db) as conn:
-        q = lambda sql: conn.execute(sql).fetchone()[0]
+
+        def q(sql: str) -> int:
+            return conn.execute(sql).fetchone()[0]
+
         assert q("SELECT COUNT(*) FROM seals") == total_seals
         assert q("SELECT COUNT(*) FROM detections WHERE context = 'seal'") == total_seals
         assert (

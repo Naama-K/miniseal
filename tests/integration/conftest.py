@@ -54,7 +54,7 @@ class Server:
     def db(self) -> Path:
         return Path(self.env["MINISEAL_DB_PATH"])
 
-    def start(self, **env_overrides) -> "Server":
+    def start(self, **env_overrides) -> Server:
         self.env.update({k: v for k, v in env_overrides.items() if v is not None})
         for k in [k for k, v in env_overrides.items() if v is None]:
             self.env.pop(k, None)  # None = unset this variable
@@ -68,7 +68,8 @@ class Server:
         # Server output goes to a FILE, not a pipe: a pipe nobody reads fills
         # up after a few tracebacks and the server then blocks on its next
         # log line, i.e. hangs. (This harness did exactly that at first.)
-        self.log_file = open(self.workdir / "server.log", "ab")
+        # Kept open for the server's lifetime and closed in stop(), so no `with`.
+        self.log_file = open(self.workdir / "server.log", "ab")  # noqa: SIM115
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--log-level", "warning"],
             cwd=self.workdir,  # a clean folder: no developer .env is read
@@ -105,7 +106,7 @@ class Server:
         """The server's output so far: for failure messages and log assertions."""
         return (self.workdir / "server.log").read_text(encoding="utf-8", errors="replace")
 
-    def restart(self, **env_overrides) -> "Server":
+    def restart(self, **env_overrides) -> Server:
         self.stop()
         return self.start(**env_overrides)
 

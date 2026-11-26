@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -12,7 +12,7 @@ def record(seal_id="a" * 32, **kw) -> SealRecord:
         pixel_hash="ab" * 32,
         key_id="0123456789abcdef",
         owner="alice",
-        created_at=datetime(2026, 11, 26, 12, 30, 15, 123456, tzinfo=timezone.utc),
+        created_at=datetime(2026, 11, 26, 12, 30, 15, 123456, tzinfo=UTC),
     )
     fields.update(kw)
     return SealRecord(**fields)
@@ -49,7 +49,7 @@ def test_non_utc_time_is_stored_as_utc(store):
     israel = timezone(timedelta(hours=2))
     store.add(record(created_at=datetime(2026, 11, 26, 14, 30, tzinfo=israel)))
     got = store.get("a" * 32).created_at
-    assert got == datetime(2026, 11, 26, 12, 30, tzinfo=timezone.utc)
+    assert got == datetime(2026, 11, 26, 12, 30, tzinfo=UTC)
     assert got.utcoffset() == timedelta(0)
 
 
