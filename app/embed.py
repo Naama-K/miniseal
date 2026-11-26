@@ -33,6 +33,10 @@ class InvalidImageError(ValueError):
     """The bytes are not an image Pillow can decode."""
 
 
+class ImageTooLargeError(InvalidImageError):
+    """The image decodes to more pixels than we are willing to hold in memory."""
+
+
 class MalformedSealError(ValueError):
     """A miniseal chunk exists but can't be parsed. Treated as tampering upstream."""
 
@@ -60,14 +64,28 @@ class SealPayload:
             raise MalformedSealError("seal chunk is not valid miniseal JSON") from exc
 
 
-def load_image(data: bytes) -> Image.Image:
-    """Decode bytes into a fully-loaded Pillow image, or raise InvalidImageError."""
+def load_image(data: bytes, max_pixels: int | None = None) -> Image.Image:
+    """Decode bytes into a fully-loaded Pillow image, or raise InvalidImageError.
+
+    If `max_pixels` is given, the size is checked from the header *before* the
+    pixels are decoded, so an oversized image is rejected without allocating it.
+    """
     try:
         img = Image.open(io.BytesIO(data))
+        width, height = img.size
+        if max_pixels is not None and width * height > max_pixels:
+            raise ImageTooLargeError(f"image is {width}x{height}, over the {max_pixels} pixel limit")
         img.load()  # force full decode now, so truncated files fail here
         return img
+    except Image.DecompressionBombError as exc:
+        raise ImageTooLargeError("image is too large to decode safely") from exc
     except (UnidentifiedImageError, OSError, SyntaxError) as exc:
         raise InvalidImageError("file is not a valid image") from exc
+
+
+def has_seal_chunk(img: Image.Image) -> bool:
+    """True if the image carries a miniseal chunk, valid or not."""
+    return CHUNK_KEY in getattr(img, "text", {})
 
 
 def prepare_for_sealing(img: Image.Image) -> Image.Image:
