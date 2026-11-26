@@ -9,10 +9,10 @@ from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.crypto import Signer, SigningKeyError
-from app.detector import Detector, DummyDetector, Label, run_detector
-from app.embed import ImageTooLargeError, InvalidImageError, has_seal_chunk, load_image
+from app.detector import Detection, Detector, DummyDetector, Label, run_detector
+from app.embed import ImageTooLargeError, InvalidImageError, has_seal_chunk, load_image, prepare_for_sealing
 from app.seal import seal_image
-from app.store import SealRecord, SealStore, utc_now
+from app.store import RecordedDetection, SealRecord, SealStore, utc_now
 from app.verify import Reason, Status, verify_image
 
 
@@ -55,6 +55,15 @@ def get_owner() -> str:
     return "anonymous"
 
 
+class DetectionAtSeal(BaseModel):
+    """The detector's verdict at the moment of sealing, kept for the record.
+    An opinion about the content, not part of what the seal certifies."""
+
+    model: str
+    score: float
+    label: Label
+
+
 class SealInfo(BaseModel):
     """Public record of a seal. The signature itself is not here: it lives
     in the image, and this endpoint answers "when and by whom", not "is it valid"."""
@@ -64,15 +73,20 @@ class SealInfo(BaseModel):
     pixel_hash: str
     key_id: str
     owner: str
+    # Null if the detector failed at sealing time (only possible under
+    # policy "always") or for seals made before detection was recorded.
+    detector_at_seal: DetectionAtSeal | None = None
 
     @classmethod
     def from_record(cls, record: SealRecord) -> "SealInfo":
+        d = record.detection
         return cls(
             seal_id=record.seal_id,
             created_at=record.created_at,
             pixel_hash=record.pixel_hash,
             key_id=record.key_id,
             owner=record.owner,
+            detector_at_seal=DetectionAtSeal(model=d.model, score=d.score, label=d.label) if d else None,
         )
 
 
@@ -124,8 +138,32 @@ def decode_upload(data: bytes, settings: Settings):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-def _seal_bytes(data: bytes, settings: Settings, signer: Signer, store: SealStore, owner: str):
-    """Upload bytes -> (sealed PNG, payload). Runs in the threadpool."""
+def _check_seal_policy(detection: Detection | None, settings: Settings) -> None:
+    """Raise if the configured policy forbids sealing this image."""
+    if settings.seal_policy != "reject_suspicious":
+        return  # "always": the verdict is recorded, never used as a gate
+    if detection is None:
+        # Fail closed: this policy promises we only seal checked images,
+        # so an image we could not check is not sealed.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "detector unavailable; policy reject_suspicious requires a check before sealing",
+        )
+    if detection.label == Label.SUSPICIOUS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {
+                "message": "image rejected by seal policy: detector labelled it suspicious",
+                "policy": settings.seal_policy,
+                "detector": {"model": detection.model, "score": detection.score, "label": detection.label},
+            },
+        )
+
+
+def _seal_bytes(
+    data: bytes, settings: Settings, signer: Signer, store: SealStore, owner: str, detector: Detector
+):
+    """Upload bytes -> (sealed PNG, payload, detection). Runs in the threadpool."""
     img = decode_upload(data, settings)
 
     # Refuse to overwrite an existing seal: re-sealing would silently replace
@@ -133,7 +171,14 @@ def _seal_bytes(data: bytes, settings: Settings, signer: Signer, store: SealStor
     if has_seal_chunk(img):
         raise HTTPException(status.HTTP_409_CONFLICT, "image is already sealed")
 
-    sealed, payload = seal_image(img, signer)
+    # Score the prepared image: exactly the pixels that get signed, and the
+    # ones /verify will see later. (seal_image prepares again; that's a no-op
+    # on an already prepared image.)
+    prepared = prepare_for_sealing(img)
+    detection = run_detector(detector, prepared, settings.detector_threshold)
+    _check_seal_policy(detection, settings)  # before signing: a refused image gets no seal
+
+    sealed, payload = seal_image(prepared, signer)
     # Record before returning: a seal we hand out but never recorded would
     # later look like it wasn't issued by us. If the insert fails, the
     # request fails and the client never gets an unregistered seal.
@@ -144,9 +189,12 @@ def _seal_bytes(data: bytes, settings: Settings, signer: Signer, store: SealStor
             key_id=payload.key_id,
             owner=owner,
             created_at=utc_now(),
+            detection=(
+                RecordedDetection(detection.model, detection.score, detection.label) if detection else None
+            ),
         )
     )
-    return sealed, payload
+    return sealed, payload, detection
 
 
 def create_app() -> FastAPI:
@@ -170,20 +218,23 @@ def create_app() -> FastAPI:
         signer: Signer = Depends(get_signer),
         store: SealStore = Depends(get_store),
         owner: str = Depends(get_owner),
+        detector: Detector = Depends(get_detector),
     ) -> Response:
         data = await read_upload(file, settings)
         # Decoding, hashing and PNG encoding are CPU-bound: run them off the
         # event loop so one large image doesn't stall every other request.
-        sealed, payload = await run_in_threadpool(_seal_bytes, data, settings, signer, store, owner)
-        return Response(
-            content=sealed,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": f'attachment; filename="{sealed_filename(file.filename)}"',
-                "X-Miniseal-Seal-Id": payload.seal_id,
-                "X-Miniseal-Key-Id": payload.key_id,
-            },
+        sealed, payload, detection = await run_in_threadpool(
+            _seal_bytes, data, settings, signer, store, owner, detector
         )
+        headers = {
+            "Content-Disposition": f'attachment; filename="{sealed_filename(file.filename)}"',
+            "X-Miniseal-Seal-Id": payload.seal_id,
+            "X-Miniseal-Key-Id": payload.key_id,
+        }
+        if detection:  # the body is the image, so the verdict travels in headers
+            headers["X-Miniseal-Detector-Label"] = detection.label
+            headers["X-Miniseal-Detector-Score"] = repr(detection.score)
+        return Response(content=sealed, media_type="image/png", headers=headers)
 
     @app.get("/seals/{seal_id}", tags=["seal"], response_model=SealInfo)
     def get_seal(seal_id: str, store: SealStore = Depends(get_store)) -> SealInfo:

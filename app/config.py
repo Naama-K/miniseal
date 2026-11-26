@@ -1,5 +1,6 @@
 """Application settings, loaded from environment variables (prefix MINISEAL_)."""
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +28,13 @@ class Settings(BaseSettings):
     # Detector scores at or above this are labelled "suspicious". Policy, not
     # model: lower it to catch more fakes at the price of more false alarms.
     detector_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # What /seal does with an image the detector calls suspicious.
+    # "always": seal it anyway and record the verdict (default). A seal
+    #   certifies origin, not truth, and a detector is only a guess.
+    # "reject_suspicious": refuse with 422; for customers who only want
+    #   to put their name on images that passed the check.
+    seal_policy: Literal["always", "reject_suspicious"] = "always"
 
 
 @lru_cache
