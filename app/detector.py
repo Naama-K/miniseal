@@ -18,8 +18,12 @@ Design
   settings (MINISEAL_DETECTOR_THRESHOLD), not inside the model.
 * Latency is measured here, around the call, so every detector is timed the
   same way and a slow model shows up in the response.
-* A failing detector must not hide the seal verdict: `run_detector` returns
-  None and logs, and /verify still answers.
+* A failing detector must not hide the seal verdict: `run_detector` never
+  raises. It returns a DetectorRun that records the failure, and /verify
+  still answers.
+* Every run, failed or not, is a DetectorRun: model, threshold, score,
+  label, latency, error. The registry logs each one (detections table), so
+  model quality, latency and failure rate can be analysed later.
 """
 from __future__ import annotations
 
@@ -52,11 +56,19 @@ class Detector(Protocol):
 
 
 @dataclass(frozen=True)
-class Detection:
+class DetectorRun:
+    """One call to a detector, successful or not: everything worth logging."""
+
     model: str
-    score: float
-    label: Label
+    threshold: float  # stored so a label can be re-read if the threshold changes
     latency_ms: float
+    score: float | None = None  # None when the run failed
+    label: Label | None = None
+    error: str | None = None  # why it failed; None on success
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
 
 
 class DummyDetector:
@@ -84,24 +96,25 @@ def label_for(score: float, threshold: float) -> Label:
     return Label.SUSPICIOUS if score >= threshold else Label.LIKELY_REAL
 
 
-def run_detector(detector: Detector, img: Image.Image, threshold: float) -> Detection | None:
-    """Score, time and label one image. None if the detector fails or misbehaves."""
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 2)
+
+
+def run_detector(detector: Detector, img: Image.Image, threshold: float) -> DetectorRun:
+    """Score, time and label one image. Never raises: failures are recorded."""
+    model = getattr(detector, "name", "unknown")
     start = time.perf_counter()
     try:
         score = float(detector.score(img))
-    except Exception:  # a model crash must not take /verify down with it
-        log.exception("detector %s failed", getattr(detector, "name", "?"))
-        return None
-    latency_ms = (time.perf_counter() - start) * 1000
+    except Exception as exc:  # a model crash must not take /verify down with it
+        log.exception("detector %s failed", model)
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        return DetectorRun(model, threshold, _elapsed_ms(start), error=error)
+    latency_ms = _elapsed_ms(start)
 
     if not (0.0 <= score <= 1.0) or math.isnan(score):
-        log.error("detector %s returned out-of-range score %r", detector.name, score)
-        return None
-    return Detection(
-        model=detector.name,
-        # Score not rounded: a displayed 0.5 labelled "likely_real" (because the
-        # real value was 0.49999) would look like a bug to whoever reads it.
-        score=score,
-        label=label_for(score, threshold),
-        latency_ms=round(latency_ms, 2),
-    )
+        log.error("detector %s returned out-of-range score %r", model, score)
+        return DetectorRun(model, threshold, latency_ms, error=f"score out of range: {score!r}")
+    # Score not rounded: a displayed 0.5 labelled "likely_real" (because the
+    # real value was 0.49999) would look like a bug to whoever reads it.
+    return DetectorRun(model, threshold, latency_ms, score, label_for(score, threshold))

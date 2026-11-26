@@ -1,4 +1,5 @@
 """FastAPI entrypoint."""
+import logging
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -8,11 +9,11 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
-from app.crypto import Signer, SigningKeyError
-from app.detector import Detection, Detector, DummyDetector, Label, run_detector
+from app.crypto import Signer, SigningKeyError, pixel_hash
+from app.detector import Detector, DetectorRun, DummyDetector, Label, run_detector
 from app.embed import ImageTooLargeError, InvalidImageError, has_seal_chunk, load_image, prepare_for_sealing
 from app.seal import seal_image
-from app.store import RecordedDetection, SealRecord, SealStore, utc_now
+from app.store import SealRecord, SealStore, utc_now
 from app.verify import Reason, Status, verify_image
 
 
@@ -62,6 +63,7 @@ class DetectionAtSeal(BaseModel):
     model: str
     score: float
     label: Label
+    threshold: float  # the label is only meaningful together with it
 
 
 class SealInfo(BaseModel):
@@ -74,7 +76,7 @@ class SealInfo(BaseModel):
     key_id: str
     owner: str
     # Null if the detector failed at sealing time (only possible under
-    # policy "always") or for seals made before detection was recorded.
+    # policy "always"); the failure itself is in the detections table.
     detector_at_seal: DetectionAtSeal | None = None
 
     @classmethod
@@ -86,7 +88,11 @@ class SealInfo(BaseModel):
             pixel_hash=record.pixel_hash,
             key_id=record.key_id,
             owner=record.owner,
-            detector_at_seal=DetectionAtSeal(model=d.model, score=d.score, label=d.label) if d else None,
+            detector_at_seal=(
+                DetectionAtSeal(model=d.model, score=d.score, label=d.label, threshold=d.threshold)
+                if d
+                else None
+            ),
         )
 
 
@@ -138,24 +144,36 @@ def decode_upload(data: bytes, settings: Settings):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-def _check_seal_policy(detection: Detection | None, settings: Settings) -> None:
+log = logging.getLogger(__name__)
+
+
+def _log_detection_best_effort(store: SealStore, run: DetectorRun, context, pixel_hash_hex, seal_id=None):
+    """Analytics, not part of the answer: a failed log write must never fail
+    the request. (Seal-time runs are NOT written this way: see store.add.)"""
+    try:
+        store.log_detection(run, context, pixel_hash_hex, seal_id)
+    except Exception:
+        log.exception("could not log %s detection", context)
+
+
+def _check_seal_policy(run: DetectorRun, settings: Settings) -> None:
     """Raise if the configured policy forbids sealing this image."""
     if settings.seal_policy != "reject_suspicious":
         return  # "always": the verdict is recorded, never used as a gate
-    if detection is None:
+    if not run.ok:
         # Fail closed: this policy promises we only seal checked images,
         # so an image we could not check is not sealed.
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "detector unavailable; policy reject_suspicious requires a check before sealing",
         )
-    if detection.label == Label.SUSPICIOUS:
+    if run.label == Label.SUSPICIOUS:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             {
                 "message": "image rejected by seal policy: detector labelled it suspicious",
                 "policy": settings.seal_policy,
-                "detector": {"model": detection.model, "score": detection.score, "label": detection.label},
+                "detector": {"model": run.model, "score": run.score, "label": run.label},
             },
         )
 
@@ -163,7 +181,7 @@ def _check_seal_policy(detection: Detection | None, settings: Settings) -> None:
 def _seal_bytes(
     data: bytes, settings: Settings, signer: Signer, store: SealStore, owner: str, detector: Detector
 ):
-    """Upload bytes -> (sealed PNG, payload, detection). Runs in the threadpool."""
+    """Upload bytes -> (sealed PNG, payload, detector run). Runs in the threadpool."""
     img = decode_upload(data, settings)
 
     # Refuse to overwrite an existing seal: re-sealing would silently replace
@@ -175,8 +193,13 @@ def _seal_bytes(
     # ones /verify will see later. (seal_image prepares again; that's a no-op
     # on an already prepared image.)
     prepared = prepare_for_sealing(img)
-    detection = run_detector(detector, prepared, settings.detector_threshold)
-    _check_seal_policy(detection, settings)  # before signing: a refused image gets no seal
+    run = run_detector(detector, prepared, settings.detector_threshold)
+    try:
+        _check_seal_policy(run, settings)  # before signing: a refused image gets no seal
+    except HTTPException:
+        # Refusals are worth counting ("how often does the policy bite?").
+        _log_detection_best_effort(store, run, "seal_rejected", pixel_hash(prepared).hex())
+        raise
 
     sealed, payload = seal_image(prepared, signer)
     # Record before returning: a seal we hand out but never recorded would
@@ -189,12 +212,10 @@ def _seal_bytes(
             key_id=payload.key_id,
             owner=owner,
             created_at=utc_now(),
-            detection=(
-                RecordedDetection(detection.model, detection.score, detection.label) if detection else None
-            ),
-        )
+        ),
+        run,  # same transaction as the seal: the verdict it was issued with is never lost
     )
-    return sealed, payload, detection
+    return sealed, payload, run
 
 
 def create_app() -> FastAPI:
@@ -223,7 +244,7 @@ def create_app() -> FastAPI:
         data = await read_upload(file, settings)
         # Decoding, hashing and PNG encoding are CPU-bound: run them off the
         # event loop so one large image doesn't stall every other request.
-        sealed, payload, detection = await run_in_threadpool(
+        sealed, payload, run = await run_in_threadpool(
             _seal_bytes, data, settings, signer, store, owner, detector
         )
         headers = {
@@ -231,9 +252,9 @@ def create_app() -> FastAPI:
             "X-Miniseal-Seal-Id": payload.seal_id,
             "X-Miniseal-Key-Id": payload.key_id,
         }
-        if detection:  # the body is the image, so the verdict travels in headers
-            headers["X-Miniseal-Detector-Label"] = detection.label
-            headers["X-Miniseal-Detector-Score"] = repr(detection.score)
+        if run.ok:  # the body is the image, so the verdict travels in headers
+            headers["X-Miniseal-Detector-Label"] = run.label
+            headers["X-Miniseal-Detector-Score"] = repr(run.score)
         return Response(content=sealed, media_type="image/png", headers=headers)
 
     @app.get("/seals/{seal_id}", tags=["seal"], response_model=SealInfo)
@@ -259,17 +280,26 @@ def create_app() -> FastAPI:
 
         def check():
             img = decode_upload(data, settings)  # decoded once, used by both checks
-            result = verify_image(img, signer, store)
-            detection = run_detector(detector, img, settings.detector_threshold)
-            return result, detection
+            digest = pixel_hash(img)  # hashed once, used by the seal check and the log
+            result = verify_image(img, signer, store, digest=digest)
+            run = run_detector(detector, img, settings.detector_threshold)
+            # seal_id only when the seal is proven ours (result.record), so the
+            # log never links a run to a seal_id an attacker merely claimed.
+            seal_id = result.record.seal_id if result.record else None
+            _log_detection_best_effort(store, run, "verify", digest.hex(), seal_id)
+            return result, run
 
         # decode, hash and the model are CPU-bound: keep them off the event loop
-        result, detection = await run_in_threadpool(check)
+        result, run = await run_in_threadpool(check)
         return VerifyResponse(
             status=result.status,
             reason=result.reason,
             seal=SealInfo.from_record(result.record) if result.record else None,
-            detector=DetectorInfo(**vars(detection)) if detection else None,
+            detector=(
+                DetectorInfo(model=run.model, score=run.score, label=run.label, latency_ms=run.latency_ms)
+                if run.ok
+                else None
+            ),
         )
 
     return app

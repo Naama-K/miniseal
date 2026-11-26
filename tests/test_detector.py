@@ -98,9 +98,10 @@ def test_threshold_setting_must_be_in_range(bad):
 
 # ---------- run_detector ----------
 
-def test_run_detector_reports_model_score_label_and_latency():
+def test_run_detector_reports_model_score_label_threshold_and_latency():
     det = run_detector(FixedDetector(0.8, name="m1"), photo(), threshold=0.5)
-    assert (det.model, det.score, det.label) == ("m1", 0.8, Label.SUSPICIOUS)
+    assert det.ok and det.error is None
+    assert (det.model, det.score, det.label, det.threshold) == ("m1", 0.8, Label.SUSPICIOUS, 0.5)
     assert det.latency_ms >= 0
 
 
@@ -115,13 +116,20 @@ def test_run_detector_measures_time_spent_in_the_model():
     assert run_detector(Slow(0.1), photo(), 0.5).latency_ms >= 45
 
 
-def test_crashing_detector_gives_none():
-    assert run_detector(CrashingDetector(), photo(), 0.5) is None
+def test_crashing_detector_is_a_failed_run_not_an_exception():
+    det = run_detector(CrashingDetector(), photo(), 0.5)
+    assert not det.ok
+    assert det.error == "RuntimeError: model server unreachable"
+    assert det.score is None and det.label is None
+    assert det.model == "crashing" and det.threshold == 0.5 and det.latency_ms >= 0
 
 
 @pytest.mark.parametrize("value", [-0.01, 1.01, math.nan, math.inf])
-def test_out_of_range_score_gives_none(value):
-    assert run_detector(FixedDetector(value), photo(), 0.5) is None
+def test_out_of_range_score_is_a_failed_run(value):
+    det = run_detector(FixedDetector(value), photo(), 0.5)
+    assert not det.ok
+    assert det.error.startswith("score out of range")
+    assert det.score is None and det.label is None
 
 
 # ---------- /verify ----------

@@ -70,7 +70,10 @@ def _tampered(reason: Reason, record: SealRecord | None = None) -> VerifyResult:
     return VerifyResult(Status.SEALED_TAMPERED, reason, record)
 
 
-def verify_image(img: Image.Image, signer: Signer, store: SealStore) -> VerifyResult:
+def verify_image(
+    img: Image.Image, signer: Signer, store: SealStore, digest: bytes | None = None
+) -> VerifyResult:
+    """`digest`: pixel_hash(img) if the caller already has it (saves hashing twice)."""
     try:
         payload = extract(img)
     except MalformedSealError:
@@ -104,6 +107,7 @@ def verify_image(img: Image.Image, signer: Signer, store: SealStore) -> VerifyRe
 
     # Record proven to belong to this seal: safe to show who sealed it, even
     # if the pixels were changed since ("sealed by alice, then modified").
-    if pixel_hash(img) != claimed:
+    actual = digest if digest is not None else pixel_hash(img)
+    if actual != claimed:
         return _tampered(Reason.PIXELS_MODIFIED, record)
     return VerifyResult(Status.SEALED_INTACT, None, record)

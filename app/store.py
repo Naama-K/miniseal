@@ -1,4 +1,4 @@
-"""The seal registry: one SQLite row per seal issued.
+"""The registry: seals issued, and every detector run.
 
 Why keep a record at all, if the seal is inside the image?
 ----------------------------------------------------------
@@ -7,10 +7,20 @@ what the image can't prove about itself: *when* it was sealed and *by whom*
 (the API key's owner). It is also our own audit trail: a seal_id that verifies
 cryptographically but is missing here was not issued by this service.
 
+Two tables
+----------
+* seals      - one row per seal issued. The facts the seal certifies.
+* detections - one row per detector run: at sealing, at a refused sealing,
+               and at every verification. Opinions about content, kept apart
+               from the facts: different lifecycle (many per image, failed runs
+               included), and it is the data for insight later: score
+               distribution per model, latency, failure rate, how often the
+               policy refuses, whether a newer model disagrees with an older one.
+
 Why plain sqlite3 and not an ORM?
 ---------------------------------
-One table, two queries. The standard library is enough, adds no dependency,
-and the SQL is short enough to read in an interview.
+Two tables, a handful of queries. The standard library is enough, adds no
+dependency, and the SQL is short enough to read in an interview.
 """
 from __future__ import annotations
 
@@ -20,41 +30,48 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
+
+from app.detector import DetectorRun
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS seals (
-    seal_id        TEXT PRIMARY KEY,
-    pixel_hash     TEXT NOT NULL,
-    key_id         TEXT NOT NULL,
-    owner          TEXT NOT NULL,
-    created_at     TEXT NOT NULL,  -- ISO 8601, always UTC
-    detector_model TEXT,           -- the three detector_* columns are NULL
-    detector_score REAL,           -- when no detection was recorded
-    detector_label TEXT
-)
+    seal_id    TEXT PRIMARY KEY,
+    pixel_hash TEXT NOT NULL,
+    key_id     TEXT NOT NULL,
+    owner      TEXT NOT NULL,
+    created_at TEXT NOT NULL  -- ISO 8601, always UTC
+);
+
+CREATE TABLE IF NOT EXISTS detections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,                -- ISO 8601, UTC
+    context    TEXT NOT NULL CHECK (context IN ('seal', 'seal_rejected', 'verify')),
+    seal_id    TEXT REFERENCES seals(seal_id), -- NULL: refused, or verify of an unproven seal
+    pixel_hash TEXT NOT NULL,                -- which pixels were scored
+    model      TEXT NOT NULL,
+    threshold  REAL NOT NULL,                -- the label is only meaningful with it
+    score      REAL,                         -- NULL when the run failed
+    label      TEXT,
+    latency_ms REAL NOT NULL,
+    error      TEXT                          -- NULL on success
+);
+
+CREATE INDEX IF NOT EXISTS detections_seal_id ON detections(seal_id);
+CREATE INDEX IF NOT EXISTS detections_created_at ON detections(created_at);
 """
 
-# Columns added after the first release. CREATE TABLE IF NOT EXISTS does
-# nothing to a table that already exists, so an older database file would
-# lack them and every INSERT would fail. Adding missing nullable columns on
-# startup is a tiny, safe migration: old rows simply read back as "no detection".
-_ADDED_COLUMNS = {
-    "detector_model": "TEXT",
-    "detector_score": "REAL",
-    "detector_label": "TEXT",
-}
-
-_COLUMNS = "seal_id, pixel_hash, key_id, owner, created_at, detector_model, detector_score, detector_label"
+Context = Literal["seal", "seal_rejected", "verify"]
 
 
 @dataclass(frozen=True)
 class RecordedDetection:
-    """What the detector said when the image was sealed. No latency: that
-    describes one request, not the image."""
+    """The detector's verdict when an image was sealed (a successful run only)."""
 
     model: str
     score: float
     label: str
+    threshold: float
 
 
 @dataclass(frozen=True)
@@ -64,11 +81,60 @@ class SealRecord:
     key_id: str
     owner: str
     created_at: datetime  # timezone-aware, UTC
-    detection: RecordedDetection | None = None  # None: detector failed, or a pre-detector seal
+    # Filled in by get(), from the detections table. None if the detector
+    # failed at sealing time (policy "always") or no run was recorded.
+    detection: RecordedDetection | None = None
+
+
+@dataclass(frozen=True)
+class DetectionRow:
+    """A row of the detections table, as read back."""
+
+    id: int
+    created_at: datetime
+    context: str
+    seal_id: str | None
+    pixel_hash: str
+    model: str
+    threshold: float
+    score: float | None
+    label: str | None
+    latency_ms: float
+    error: str | None
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _insert_detection(
+    conn: sqlite3.Connection,
+    run: DetectorRun,
+    context: Context,
+    pixel_hash: str,
+    seal_id: str | None,
+    created_at: datetime,
+) -> None:
+    conn.execute(
+        "INSERT INTO detections (created_at, context, seal_id, pixel_hash, model, threshold, "
+        "score, label, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (  # values only ever go through placeholders, never string formatting
+            _iso(created_at),
+            context,
+            seal_id,
+            pixel_hash,
+            run.model,
+            run.threshold,
+            run.score,
+            run.label,
+            run.latency_ms,
+            run.error,
+        ),
+    )
 
 
 class SealStore:
@@ -84,45 +150,75 @@ class SealStore:
         # So a path like /data/miniseal.db works on a fresh Docker volume.
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.execute(_SCHEMA)
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(seals)")}
-            for name, sql_type in _ADDED_COLUMNS.items():
-                if name not in existing:
-                    # Names come from the constant above, never from input.
-                    conn.execute(f"ALTER TABLE seals ADD COLUMN {name} {sql_type}")
+            conn.executescript(_SCHEMA)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         # timeout: wait for a concurrent writer instead of failing at once.
         conn = sqlite3.connect(self._path, timeout=5)
+        # SQLite ignores REFERENCES unless this is switched on, per connection.
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:  # commits on success, rolls back on exception
                 yield conn
         finally:
             conn.close()  # `with conn` alone does NOT close the connection
 
-    def add(self, record: SealRecord) -> None:
-        d = record.detection
+    def add(self, record: SealRecord, run: DetectorRun | None = None) -> None:
+        """Record a seal and, if given, the detector run made while sealing it.
+
+        One transaction: either both rows exist or neither does, so a seal can
+        never lose the verdict it was issued with.
+        """
         with self._connect() as conn:
             conn.execute(
-                f"INSERT INTO seals ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (  # values only ever go through placeholders
-                    record.seal_id,
-                    record.pixel_hash,
-                    record.key_id,
-                    record.owner,
-                    record.created_at.astimezone(timezone.utc).isoformat(),
-                    d.model if d else None,
-                    d.score if d else None,
-                    d.label if d else None,
-                ),
+                "INSERT INTO seals (seal_id, pixel_hash, key_id, owner, created_at) VALUES (?, ?, ?, ?, ?)",
+                (record.seal_id, record.pixel_hash, record.key_id, record.owner, _iso(record.created_at)),
             )
+            if run is not None:
+                _insert_detection(conn, run, "seal", record.pixel_hash, record.seal_id, record.created_at)
+
+    def log_detection(
+        self, run: DetectorRun, context: Context, pixel_hash: str, seal_id: str | None = None
+    ) -> None:
+        """Record a run that is not part of issuing a seal (verify, refused seal)."""
+        with self._connect() as conn:
+            _insert_detection(conn, run, context, pixel_hash, seal_id, utc_now())
 
     def get(self, seal_id: str) -> SealRecord | None:
         with self._connect() as conn:
-            row = conn.execute(f"SELECT {_COLUMNS} FROM seals WHERE seal_id = ?", (seal_id,)).fetchone()
-        if row is None:
-            return None
-        seal_id, pixel_hash, key_id, owner, created_at, model, score, label = row
-        detection = RecordedDetection(model, score, label) if model is not None else None
-        return SealRecord(seal_id, pixel_hash, key_id, owner, datetime.fromisoformat(created_at), detection)
+            row = conn.execute(
+                "SELECT seal_id, pixel_hash, key_id, owner, created_at FROM seals WHERE seal_id = ?",
+                (seal_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            det = conn.execute(
+                "SELECT model, score, label, threshold FROM detections "
+                "WHERE seal_id = ? AND context = 'seal' AND error IS NULL "
+                "ORDER BY id LIMIT 1",
+                (seal_id,),
+            ).fetchone()
+        seal_id, pixel_hash, key_id, owner, created_at = row
+        return SealRecord(
+            seal_id,
+            pixel_hash,
+            key_id,
+            owner,
+            datetime.fromisoformat(created_at),
+            RecordedDetection(*det) if det else None,
+        )
+
+    def detections(self, seal_id: str | None = None, context: Context | None = None) -> list[DetectionRow]:
+        """Detector runs, oldest first, optionally filtered. For tests and analysis."""
+        sql, args = "SELECT * FROM detections WHERE 1 = 1", []
+        if seal_id is not None:
+            sql, args = sql + " AND seal_id = ?", [*args, seal_id]
+        if context is not None:
+            sql, args = sql + " AND context = ?", [*args, context]
+        with self._connect() as conn:
+            rows = conn.execute(sql + " ORDER BY id", args).fetchall()
+        return [
+            DetectionRow(r[0], datetime.fromisoformat(r[1]), *r[2:])
+            for r in rows
+        ]

@@ -183,7 +183,7 @@ def test_rejected_uploads_are_not_registered(client):
 
 def test_image_is_not_returned_if_it_cannot_be_registered(client):
     class BrokenStore:
-        def add(self, record):
+        def add(self, record, run=None):
             raise sqlite3.OperationalError("disk I/O error")
 
     client.app.dependency_overrides[get_store] = lambda: BrokenStore()
