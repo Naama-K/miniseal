@@ -180,6 +180,37 @@ def generate_key_b64() -> str:
     return base64.b64encode(raw).decode()
 
 
+def ensure_key_file(path) -> Signer:
+    """Load the signing key from `path`, creating it first if it doesn't exist.
+
+    For containers: the key is generated once, on first start, inside the
+    data volume, so `docker compose up` works with no setup and the key
+    survives restarts and rebuilds. Created with O_EXCL (two processes
+    starting at once can't both write one) and mode 0600 (owner-only).
+
+    Trade-off, stated in the README: the key lives next to the database, so
+    whoever has the volume can sign. Production keeps it in a KMS/HSM, and
+    losing the volume means losing the key: every seal becomes unknown_key.
+    """
+    import os
+    from pathlib import Path
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass  # created earlier (or by a concurrent start): just load it
+    else:
+        with os.fdopen(fd, "w") as f:
+            f.write(generate_key_b64() + "\n")
+    return Signer.from_b64(path.read_text().strip())
+
+
 if __name__ == "__main__":
-    # Usage: python -m app.crypto   -> prints a new key for your .env file
-    print(f"MINISEAL_SIGNING_KEY={generate_key_b64()}")
+    # python -m app.crypto               -> prints a new key for your .env file
+    # python -m app.crypto ensure PATH   -> creates PATH if missing; prints the key id, never the key
+    if len(sys.argv) == 3 and sys.argv[1] == "ensure":
+        print(f"signing key ready, key_id={ensure_key_file(sys.argv[2]).key_id}")
+    else:
+        print(f"MINISEAL_SIGNING_KEY={generate_key_b64()}")
