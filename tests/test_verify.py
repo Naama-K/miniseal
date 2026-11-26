@@ -287,6 +287,7 @@ def test_api_tampered_is_200_with_reason(client):
 
 def test_api_unsealed(client):
     body = upload(client, "/verify", resave(photo(), None)).json()
+    assert body.pop("detector")["model"] == "dummy-hash-v1"  # covered in test_detector
     assert body == {"status": "unsealed", "reason": None, "seal": None}
 
 

@@ -1,7 +1,7 @@
 """Application settings, loaded from environment variables (prefix MINISEAL_)."""
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # SQLite file for the seal registry. Relative paths resolve against the
     # working directory; in Docker this points into a mounted volume.
     db_path: str = "miniseal.db"
+
+    # Detector scores at or above this are labelled "suspicious". Policy, not
+    # model: lower it to catch more fakes at the price of more false alarms.
+    detector_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 @lru_cache

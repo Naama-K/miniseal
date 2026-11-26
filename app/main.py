@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.crypto import Signer, SigningKeyError
+from app.detector import Detector, DummyDetector, Label, run_detector
 from app.embed import ImageTooLargeError, InvalidImageError, has_seal_chunk, load_image
 from app.seal import seal_image
 from app.store import SealRecord, SealStore, utc_now
@@ -41,6 +42,12 @@ def get_store(settings: Settings = Depends(get_settings)) -> SealStore:
     return _store_for(settings.db_path)
 
 
+@lru_cache
+def get_detector() -> Detector:
+    """The content detector. The one line to change for a real model."""
+    return DummyDetector()
+
+
 def get_owner() -> str:
     """Who is making the request. Placeholder until API keys exist (task 7),
     which will replace this one function with a lookup of the caller's key.
@@ -69,6 +76,13 @@ class SealInfo(BaseModel):
         )
 
 
+class DetectorInfo(BaseModel):
+    model: str
+    score: float  # 0 = looks real, 1 = looks fake
+    label: Label
+    latency_ms: float
+
+
 class VerifyResponse(BaseModel):
     status: Status
     # Why it is tampered; null when intact or unsealed.
@@ -77,6 +91,9 @@ class VerifyResponse(BaseModel):
     # to belong to this image's seal_id (see app/verify.py), so a forged seal
     # can never borrow another user's identity.
     seal: SealInfo | None = None
+    # Content check, independent of the seal. Null only if the detector failed:
+    # the seal verdict is still valid and is returned regardless.
+    detector: DetectorInfo | None = None
 
 
 def sealed_filename(original: str | None) -> str:
@@ -183,19 +200,25 @@ def create_app() -> FastAPI:
         settings: Settings = Depends(get_settings),
         signer: Signer = Depends(get_signer),
         store: SealStore = Depends(get_store),
+        detector: Detector = Depends(get_detector),
     ) -> VerifyResponse:
         # Always 200 for a verdict, tampered included: the request succeeded,
         # the *image* failed. 4xx is kept for requests we couldn't evaluate.
         data = await read_upload(file, settings)
 
         def check():
-            return verify_image(decode_upload(data, settings), signer, store)
+            img = decode_upload(data, settings)  # decoded once, used by both checks
+            result = verify_image(img, signer, store)
+            detection = run_detector(detector, img, settings.detector_threshold)
+            return result, detection
 
-        result = await run_in_threadpool(check)  # decode + hash are CPU-bound
+        # decode, hash and the model are CPU-bound: keep them off the event loop
+        result, detection = await run_in_threadpool(check)
         return VerifyResponse(
             status=result.status,
             reason=result.reason,
             seal=SealInfo.from_record(result.record) if result.record else None,
+            detector=DetectorInfo(**vars(detection)) if detection else None,
         )
 
     return app
