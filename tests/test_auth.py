@@ -213,3 +213,91 @@ def test_cli_create_list_revoke(db, capsys):
 def test_cli_rejects_a_bad_owner(db):
     with pytest.raises(SystemExit):
         main(["--db", str(db), "create", "bad owner"])
+
+
+# ---------- self-service sign-up ----------
+
+def signup_client(db, **kw):
+    settings = Settings(_env_file=None, signing_key=generate_key_b64(), db_path=str(db), **kw)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    return TestClient(app)
+
+
+def test_signup_is_off_by_default(db):
+    resp = signup_client(db).post("/signup", json={"owner": "alice"})
+    assert resp.status_code == 404
+    assert ApiKeyStore(db).list() == []
+
+
+def test_signup_gives_a_working_key_that_is_not_cached(db):
+    client = signup_client(db, open_signup=True)
+    resp = client.post("/signup", json={"owner": "acme"})
+    assert resp.status_code == 201
+    assert resp.headers["cache-control"] == "no-store"
+    body = resp.json()
+    assert body["owner"] == "acme" and body["key"].startswith(KEY_PREFIX)
+    assert client.get("/me", headers={"X-API-Key": body["key"]}).json() == {"owner": "acme"}
+
+
+@pytest.mark.parametrize("taken", ["alice", "Alice", "ALICE"])
+def test_signup_cannot_claim_an_existing_owner(db, keys, taken):
+    # Otherwise a stranger could sign up as "alice" and read Alice's seals.
+    keys.create("alice")  # an admin-created account counts too
+    resp = signup_client(db, open_signup=True).post("/signup", json={"owner": taken})
+    assert resp.status_code == 409
+    assert len(keys.list()) == 1
+
+
+@pytest.mark.parametrize("owner", ["", "a b", "<script>", "x" * 65])
+def test_signup_validates_the_name(db, owner):
+    assert signup_client(db, open_signup=True).post("/signup", json={"owner": owner}).status_code == 422
+
+
+def test_simultaneous_signups_for_one_name_give_one_account(keys):
+    # Check and insert are one SQL statement, so there is no race window.
+    import threading
+
+    results = []
+
+    def attempt():
+        try:
+            keys.signup("race")
+            results.append("ok")
+        except Exception as exc:
+            results.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=attempt) for _ in range(20)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert results.count("ok") == 1
+    assert set(results) == {"ok", "OwnerTakenError"}
+    assert len(keys.list()) == 1
+
+
+def test_admin_can_still_add_a_key_for_an_existing_owner(keys):
+    keys.create("alice")
+    keys.create("alice")  # rotation: allowed for the admin CLI, not for sign-up
+    assert len(keys.list()) == 2
+
+
+# ---------- /me and "my seals" ----------
+
+def test_me_needs_a_key(app, keys):
+    assert client_for(app, None).get("/me").status_code == 401
+    assert client_for(app, keys.create("bob")[1]).get("/me").json() == {"owner": "bob"}
+
+
+def test_my_seals_lists_only_mine_newest_first(app, keys):
+    alice = client_for(app, keys.create("alice")[1])
+    bob = client_for(app, keys.create("bob")[1])
+    a1 = seal(alice, png_bytes((1, 1, 1))).headers["x-miniseal-seal-id"]
+    seal(bob, png_bytes((2, 2, 2)))
+    a2 = seal(alice, png_bytes((3, 3, 3))).headers["x-miniseal-seal-id"]
+
+    listed = alice.get("/seals").json()
+    assert [s["seal_id"] for s in listed] == [a2, a1]
+    assert all(s["owner"] == "alice" and s["detector_at_seal"] for s in listed)
+    assert [s["seal_id"] for s in alice.get("/seals?limit=1").json()] == [a2]
+    assert len(bob.get("/seals").json()) == 1
+    assert client_for(app, None).get("/seals").status_code == 401

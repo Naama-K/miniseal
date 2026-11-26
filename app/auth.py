@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
 """
 
 
+class OwnerTakenError(Exception):
+    """Sign-up for a name that already has keys."""
+
+
 def hash_key(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -74,18 +78,44 @@ class ApiKeyStore:
         self._path = open_db(path, _SCHEMA)
 
     def create(self, owner: str) -> tuple[str, str]:
-        """New key for `owner`. Returns (id, key): the only time the key exists
-        in plain text. Owners are restricted to a safe character set because
-        they appear in responses, logs and the CLI's output."""
+        """New key for `owner` (admin: also for an existing owner, e.g. to
+        rotate). Returns (id, key): the only time the key exists in plain text."""
+        return self._insert(owner, new_owner_only=False)
+
+    def signup(self, owner: str) -> tuple[str, str]:
+        """New key for a NEW owner only (self-service sign-up).
+
+        Without this, signing up as "alice" would hand a stranger a key to
+        Alice's account and all her seals. The name check is case-insensitive
+        so "Alice" can't pose as "alice". Raises OwnerTakenError.
+        """
+        return self._insert(owner, new_owner_only=True)
+
+    def _insert(self, owner: str, new_owner_only: bool) -> tuple[str, str]:
+        # Owners are restricted to a safe character set because they appear
+        # in responses, logs, the UI and the CLI's output.
         if not OWNER_RE.fullmatch(owner):
             raise ValueError("owner must be 1-64 characters: letters, digits, '_', '.', '-'")
         key = KEY_PREFIX + secrets.token_urlsafe(32)  # 32 random bytes
         key_id = secrets.token_hex(4)
+        values = (key_id, hash_key(key), owner, utc_now().isoformat())
         with connect(self._path) as conn:
-            conn.execute(
-                "INSERT INTO api_keys (id, key_hash, owner, created_at) VALUES (?, ?, ?, ?)",
-                (key_id, hash_key(key), owner, utc_now().isoformat()),
-            )
+            if new_owner_only:
+                # Check and insert in ONE statement: two simultaneous sign-ups
+                # for the same name can't both pass the check (no check-then-
+                # insert race; the same lost-update problem, solved in SQL).
+                cur = conn.execute(
+                    "INSERT INTO api_keys (id, key_hash, owner, created_at) "
+                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS "
+                    "(SELECT 1 FROM api_keys WHERE lower(owner) = lower(?))",
+                    (*values, owner),
+                )
+                if cur.rowcount == 0:
+                    raise OwnerTakenError(owner)
+            else:
+                conn.execute(
+                    "INSERT INTO api_keys (id, key_hash, owner, created_at) VALUES (?, ?, ?, ?)", values
+                )
         return key_id, key
 
     def owner_for(self, key: str) -> str | None:

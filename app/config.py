@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     #   to put their name on images that passed the check.
     seal_policy: Literal["always", "reject_suspicious"] = "always"
 
+    # Self-service sign-up (POST /signup): anyone can get an API key by
+    # choosing a free name. Off by default: there is no email check, CAPTCHA
+    # or rate limit behind it, so it's for demos, not for production, where
+    # keys come from a real account system (or the admin CLI, app.auth).
+    open_signup: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:
