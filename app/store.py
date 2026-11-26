@@ -150,6 +150,12 @@ class SealStore:
         # So a path like /data/miniseal.db works on a fresh Docker volume.
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            # WAL (write-ahead log): readers no longer block the writer and the
+            # writer no longer blocks readers, so GET /seals and /verify lookups
+            # keep flowing while a seal is being written. It is a property of
+            # the file (it persists), so setting it once here is enough.
+            # Caveat: WAL needs a local filesystem, not a network share.
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(_SCHEMA)
 
     @contextmanager
@@ -158,6 +164,10 @@ class SealStore:
         conn = sqlite3.connect(self._path, timeout=5)
         # SQLite ignores REFERENCES unless this is switched on, per connection.
         conn.execute("PRAGMA foreign_keys = ON")
+        # With WAL, NORMAL syncs to disk at checkpoints instead of every
+        # commit: much cheaper writes. A power cut can lose the last few
+        # commits but never corrupts the file. Per connection, like the above.
+        conn.execute("PRAGMA synchronous = NORMAL")
         try:
             with conn:  # commits on success, rolls back on exception
                 yield conn

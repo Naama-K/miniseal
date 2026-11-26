@@ -273,3 +273,10 @@ def test_verify_still_answers_if_the_log_write_fails(db):
     assert resp.status_code == 200
     assert resp.json()["status"] == "sealed_intact"
     assert resp.json()["detector"] is not None
+
+
+def test_database_uses_write_ahead_logging(db):
+    # Readers and the writer don't block each other (see SealStore.__init__).
+    SealStore(db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
