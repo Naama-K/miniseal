@@ -1,0 +1,32 @@
+# docker compose up --build   then open http://localhost:8000
+services:
+  miniseal:
+    build: .
+    image: miniseal:local
+    ports:
+      - "8000:8000"
+    environment:
+      # Demo: lets visitors create an account in the UI. No email check or
+      # rate limit behind it: turn it off for anything real, and issue keys
+      # with: docker compose exec miniseal python -m app.auth create <name>
+      MINISEAL_OPEN_SIGNUP: "true"
+      # MINISEAL_SEAL_POLICY: reject_suspicious
+      # MINISEAL_DETECTOR_THRESHOLD: "0.5"
+      # To bring your own key instead of the generated one:
+      # MINISEAL_SIGNING_KEY: ${MINISEAL_SIGNING_KEY}
+    volumes:
+      # Everything that must survive: seals, API keys, detections, signing key.
+      - miniseal-data:/data
+    # Hardening: nothing can be written outside /data and /tmp, no Linux
+    # capabilities, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp  # upload spooling
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  miniseal-data:

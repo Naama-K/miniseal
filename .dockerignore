@@ -1,0 +1,14 @@
+# Only what the image needs: app/, requirements.txt, the entrypoint.
+# Above all, never secrets or local data.
+.env
+*.db
+*.db-wal
+*.db-shm
+.venv/
+.git/
+.idea/
+.claude/
+.pytest_cache/
+__pycache__/
+*.pyc
+tests/

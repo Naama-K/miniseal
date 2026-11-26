@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     # Base64 Ed25519 seed. SecretStr keeps it out of logs and repr():
     # printing settings shows '**********' instead of the key.
     signing_key: SecretStr | None = None
+    # Or: a file holding that same base64 key (the Docker convention for
+    # secrets: *_FILE). Set one of the two, not both. The app only READS this
+    # file; creating it is an explicit step (`python -m app.crypto ensure`,
+    # run by the container on start), so a typo in the path fails loudly
+    # instead of quietly minting a new key that orphans every existing seal.
+    signing_key_file: str | None = None
 
     # Upload limits. The byte cap stops huge uploads; the pixel cap stops
     # "decompression bombs" (a tiny file that decodes to gigabytes of pixels).

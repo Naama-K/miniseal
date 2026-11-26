@@ -190,6 +190,11 @@ class SealStore:
     def _connect(self):
         return connect(self._path)
 
+    def ping(self) -> None:
+        """Raise if the database can't be read right now (readiness check)."""
+        with self._connect() as conn:
+            conn.execute("SELECT 1 FROM seals LIMIT 1").fetchall()
+
     def add(self, record: SealRecord, run: DetectorRun | None = None) -> None:
         """Record a seal and, if given, the detector run made while sealing it.
 

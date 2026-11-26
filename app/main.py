@@ -28,12 +28,34 @@ def _signer_for(key_b64: str) -> Signer:
     return Signer.from_b64(key_b64)
 
 
+@lru_cache
+def _signer_from_file(path: str) -> Signer:
+    # Cached per path; a failure (missing file) is not cached, so creating
+    # the file later fixes the service without a restart.
+    try:
+        text = Path(path).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SigningKeyError(f"MINISEAL_SIGNING_KEY_FILE cannot be read ({type(exc).__name__})") from exc
+    return Signer.from_b64(text)
+
+
+def load_signer(settings: Settings) -> Signer:
+    """The configured signer, or SigningKeyError saying what to fix."""
+    key = settings.signing_key.get_secret_value() if settings.signing_key else None
+    if key and settings.signing_key_file:
+        # Two sources could disagree; picking one silently would sign with
+        # a key the operator didn't expect.
+        raise SigningKeyError("set MINISEAL_SIGNING_KEY or MINISEAL_SIGNING_KEY_FILE, not both")
+    if settings.signing_key_file:
+        return _signer_from_file(settings.signing_key_file)
+    return _signer_for(key or "")
+
+
 def get_signer(settings: Settings = Depends(get_settings)) -> Signer:
     """The configured signer. 503 (not a crash at startup) when no key is set,
     so /health keeps working and the error says exactly what to fix."""
-    key = settings.signing_key.get_secret_value() if settings.signing_key else None
     try:
-        return _signer_for(key or "")
+        return load_signer(settings)
     except SigningKeyError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
@@ -318,7 +340,32 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:
+        """Liveness: the process is up and answering. Checks nothing else on
+        purpose: a restart can't fix a missing key or a full disk, so this
+        must not fail for those (an orchestrator would restart in a loop)."""
         return {"status": "ok", "version": settings.version}
+
+    @app.get("/ready", tags=["ops"], responses={503: {"description": "Not ready; see checks"}})
+    def ready(response: Response, settings: Settings = Depends(get_settings)) -> dict:
+        """Readiness: can this instance actually serve seals right now?
+        Load balancers route traffic only to ready instances. The answer
+        names what failed, never secrets or file paths."""
+        checks = {}
+        try:
+            checks["signing_key"] = f"ok ({load_signer(settings).key_id})"
+        except SigningKeyError as exc:
+            checks["signing_key"] = f"failed: {exc}"
+        try:
+            _store_for(settings.db_path).ping()
+            _key_store_for(settings.db_path)
+            checks["database"] = "ok"
+        except Exception as exc:  # any failure means "don't send me traffic"
+            log.exception("readiness: database check failed")
+            checks["database"] = f"failed: {type(exc).__name__}"
+        ok = all(v.startswith("ok") for v in checks.values())
+        if not ok:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "ready" if ok else "not_ready", "checks": checks}
 
     @app.post(
         "/seal",
