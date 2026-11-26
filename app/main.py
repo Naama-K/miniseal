@@ -3,13 +3,16 @@ import logging
 import re
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, Security, UploadFile, status
-from fastapi.security import APIKeyHeader
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, Security, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from app.auth import ApiKeyStore
+from app.auth import OWNER_RE, ApiKeyStore, OwnerTakenError
 from app.config import Settings, get_settings
 from app.crypto import Signer, SigningKeyError, pixel_hash
 from app.detector import Detector, DetectorRun, DummyDetector, Label, run_detector
@@ -124,6 +127,16 @@ class SealInfo(BaseModel):
                 else None
             ),
         )
+
+
+class SignupRequest(BaseModel):
+    owner: str = Field(pattern=OWNER_RE.pattern, description="Your account name: 1-64 of A-Z a-z 0-9 _ . -")
+
+
+class SignupResponse(BaseModel):
+    id: str  # the key's public id
+    owner: str
+    key: str  # shown this once; we only keep its hash
 
 
 class DetectorInfo(BaseModel):
@@ -248,10 +261,60 @@ def _seal_bytes(
     return sealed, payload, run
 
 
+STATIC_DIR = Path(__file__).parent / "static"
+
+# The UI is our own files only: no third-party scripts, nothing inline but
+# CSS. If an attacker ever got text into the page (e.g. via an owner name),
+# the browser still refuses to run it. The API key sits in that page, so
+# this matters. img-src blob: is for previews of the user's own files.
+UI_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 def create_app() -> FastAPI:
     # App factory: lets tests build a fresh app with different settings.
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version=settings.version)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def ui() -> FileResponse:
+        """The single-page customer UI. Same origin as the API: no CORS needed."""
+        return FileResponse(STATIC_DIR / "index.html", headers=UI_HEADERS)
+
+    @app.post(
+        "/signup",
+        tags=["account"],
+        response_model=SignupResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={404: {"description": "Sign-up is disabled"}, 409: {"description": "Name taken"}},
+    )
+    def signup(
+        body: SignupRequest,
+        response: Response,
+        settings: Settings = Depends(get_settings),
+        keys: ApiKeyStore = Depends(get_key_store),
+    ) -> SignupResponse:
+        """Demo self-service sign-up: choose a free name, get an API key once.
+
+        Disabled unless MINISEAL_OPEN_SIGNUP=true. In production a customer
+        gets keys from a real account (email check, login, dashboard)."""
+        if not settings.open_signup:
+            # 404, as if the route didn't exist: nothing to probe when it's off.
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "sign-up is disabled")
+        try:
+            key_id, key = keys.signup(body.owner)
+        except OwnerTakenError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, "this name is taken") from exc
+        # The key is in this body: no browser or proxy may keep a copy.
+        response.headers["Cache-Control"] = "no-store"
+        return SignupResponse(id=key_id, owner=body.owner, key=key)
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:
@@ -286,6 +349,20 @@ def create_app() -> FastAPI:
             headers["X-Miniseal-Detector-Label"] = run.label
             headers["X-Miniseal-Detector-Score"] = repr(run.score)
         return Response(content=sealed, media_type="image/png", headers=headers)
+
+    @app.get("/me", tags=["account"])
+    def me(owner: str = Depends(get_owner)) -> dict:
+        """Who this API key belongs to. Lets the UI check a pasted key."""
+        return {"owner": owner}
+
+    @app.get("/seals", tags=["seal"], response_model=list[SealInfo])
+    def my_seals(
+        limit: int = Query(50, ge=1, le=200),
+        store: SealStore = Depends(get_store),
+        owner: str = Depends(get_owner),
+    ) -> list[SealInfo]:
+        """Your own seals, newest first. Never anyone else's."""
+        return [SealInfo.from_record(r) for r in store.list_by_owner(owner, limit)]
 
     @app.get("/seals/{seal_id}", tags=["seal"], response_model=SealInfo)
     def get_seal(

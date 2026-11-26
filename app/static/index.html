@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniSeal</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #1c2230; --muted: #667085; --line: #e3e6eb;
+    --brand: #3b5bdb; --brand-ink: #fff;
+    --ok: #12805c; --ok-bg: #e7f6ef; --bad: #c4320a; --bad-bg: #fdeee8; --none: #475467; --none-bg: #eef0f3;
+    --warn-bg: #fff6e0; --warn: #8a5a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --ink: #e8ebf0; --muted: #98a2b3; --line: #2c3340;
+      --brand: #6d8bff; --brand-ink: #0b0f17;
+      --ok: #4cd4a0; --ok-bg: #12342a; --bad: #ff8a65; --bad-bg: #3a1f17; --none: #c3cad5; --none-bg: #252b36;
+      --warn-bg: #3a2f12; --warn: #f5c451;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; gap: 16px; }
+  .logo { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .logo span { color: var(--brand); }
+  .who { margin-left: auto; color: var(--muted); font-size: 14px; display: flex; gap: 10px; align-items: center; }
+  .who b { color: var(--ink); }
+  main { max-width: 960px; margin: 0 auto; padding: 20px; }
+  nav.tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  nav.tabs button { background: none; border: 0; padding: 8px 14px; border-radius: 8px; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+  nav.tabs button[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 4px; font-size: 17px; }
+  .card p.sub { margin: 0 0 16px; color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=password] { font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); flex: 1 1 220px; min-width: 0; }
+  button.btn { font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  button.link { background: none; border: 0; color: var(--brand); font: inherit; cursor: pointer; padding: 0; }
+  .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center; color: var(--muted); cursor: pointer; display: block; }
+  .drop:hover, .drop.over { border-color: var(--brand); color: var(--ink); }
+  .drop input { display: none; }
+  .grid2 { display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .thumb { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; word-break: break-all; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  .verdict { border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .verdict .title { font-size: 18px; font-weight: 700; }
+  .verdict.ok { background: var(--ok-bg); color: var(--ok); }
+  .verdict.bad { background: var(--bad-bg); color: var(--bad); }
+  .verdict.none { background: var(--none-bg); color: var(--none); }
+  .verdict .why { color: var(--ink); margin-top: 4px; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 13px; font-weight: 600; }
+  .pill.likely_real { background: var(--ok-bg); color: var(--ok); }
+  .pill.suspicious { background: var(--bad-bg); color: var(--bad); }
+  .meter { height: 8px; border-radius: 99px; background: var(--none-bg); position: relative; overflow: hidden; margin: 6px 0 2px; }
+  .meter i { position: absolute; inset: 0 auto 0 0; background: var(--brand); border-radius: 99px; }
+  .meter b { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); }
+  .note { font-size: 13px; color: var(--muted); }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+  .error { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 10px 12px; margin-top: 12px; }
+  .keybox { display: flex; gap: 8px; margin: 12px 0; }
+  .keybox code { flex: 1; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  th { color: var(--muted); font-weight: 600; }
+  .demo { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; }
+  .demo h3 { margin: 0 0 4px; font-size: 14px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="logo">Mini<span>Seal</span></div>
+    <div class="who" id="who"></div>
+  </div>
+</header>
+
+<main>
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-seal" aria-selected="true">Seal my images</button>
+    <button role="tab" id="tab-verify" aria-selected="false">Verify an image</button>
+  </nav>
+
+  <!-- ============ SEAL (customers, needs an API key) ============ -->
+  <section id="panel-seal">
+
+    <div class="card" id="account">
+      <h2>Your account</h2>
+      <p class="sub">Sealing records <b>you</b> as the owner, so it needs an API key. Verifying doesn't.</p>
+      <div class="row" style="margin-bottom:14px">
+        <button class="btn" id="mode-signup">Create an account</button>
+        <button class="btn" id="mode-login">I have an API key</button>
+      </div>
+      <form id="signup-form" class="row">
+        <input type="text" id="signup-name" placeholder="Choose a name, e.g. acme-news" autocomplete="off" required>
+        <button class="btn primary">Get my API key</button>
+      </form>
+      <form id="login-form" class="row" hidden>
+        <input type="password" id="login-key" placeholder="msk_..." autocomplete="off" required>
+        <button class="btn primary">Use this key</button>
+      </form>
+      <div id="account-error" class="error" hidden></div>
+    </div>
+
+    <div class="card" id="newkey" hidden>
+      <h2>Your API key</h2>
+      <p class="sub">Copy it now. We store only a fingerprint of it, so <b>nobody can show it to you again</b>, not even us.</p>
+      <div class="keybox"><code id="newkey-value"></code><button class="btn" id="copy-key">Copy</button></div>
+      <p class="note">Your apps send it in the <code>X-API-Key</code> header. Lost it? The operator can revoke it and issue you a new one.</p>
+      <button class="btn primary" id="newkey-done">I've saved it</button>
+    </div>
+
+    <div id="sealing" hidden>
+      <div class="card">
+        <h2>Seal an image</h2>
+        <p class="sub">We sign the exact pixels and record when and by whom. You get back a PNG that carries the seal.</p>
+        <label class="drop" id="seal-drop">
+          <input type="file" id="seal-file" accept="image/*">
+          <span>Drop an image here, or click to choose (PNG, JPEG, WebP)</span>
+        </label>
+        <div id="seal-error" class="error" hidden></div>
+
+        <div id="seal-result" hidden style="margin-top:18px">
+          <div class="grid2">
+            <img class="thumb" id="seal-img" alt="Sealed image">
+            <div>
+              <div class="verdict ok"><div class="title">✓ Sealed</div><div class="why">Anyone can now verify this file. Keep this PNG: converting it to another format removes the seal.</div></div>
+              <dl class="kv" id="seal-kv"></dl>
+              <div class="actions">
+                <button class="btn primary" id="seal-download">Download sealed PNG</button>
+                <button class="btn" id="seal-verify">Verify it</button>
+              </div>
+            </div>
+          </div>
+          <div class="demo">
+            <h3>Demo: what happens to a sealed file out in the world?</h3>
+            <p class="note" style="margin:0 0 10px">These run in your browser, on the file you just sealed, and send the result to Verify.</p>
+            <div class="actions" style="margin-top:0">
+              <button class="btn" id="demo-tamper">Edit one pixel, keep the seal (an attacker)</button>
+              <button class="btn" id="demo-strip">Re-save the image (like social media / screenshots)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between"><h2>My seals</h2><button class="link" id="refresh-seals">Refresh</button></div>
+        <p class="sub">Only you can see this list. Other accounts get “not found” for your seal ids.</p>
+        <div id="seals-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ VERIFY (public) ============ -->
+  <section id="panel-verify" hidden>
+    <div class="card">
+      <h2>Verify an image</h2>
+      <p class="sub">No account needed. Is it sealed, unchanged since, and who sealed it? Plus an independent content check.</p>
+      <label class="drop" id="verify-drop">
+        <input type="file" id="verify-file" accept="image/*">
+        <span>Drop an image here, or click to choose</span>
+      </label>
+      <div id="verify-error" class="error" hidden></div>
+    </div>
+
+    <div class="card" id="verify-result" hidden>
+      <div class="grid2">
+        <img class="thumb" id="verify-img" alt="Checked image">
+        <div>
+          <div class="verdict" id="verdict"><div class="title" id="verdict-title"></div><div class="why" id="verdict-why"></div></div>
+          <dl class="kv" id="verify-kv"></dl>
+          <div id="detector" style="margin-top:16px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS detections (
     error      TEXT                          -- NULL on success
 );
 
+CREATE INDEX IF NOT EXISTS seals_owner ON seals(owner, created_at);  -- "my seals"
 CREATE INDEX IF NOT EXISTS detections_seal_id ON detections(seal_id);
 CREATE INDEX IF NOT EXISTS detections_created_at ON detections(created_at);
 """
@@ -233,6 +234,20 @@ class SealStore:
             datetime.fromisoformat(created_at),
             RecordedDetection(*det) if det else None,
         )
+
+    def list_by_owner(self, owner: str, limit: int = 50) -> list[SealRecord]:
+        """An owner's seals, newest first, each with its seal-time verdict."""
+        with self._connect() as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT seal_id FROM seals WHERE owner = ? ORDER BY created_at DESC, seal_id LIMIT ?",
+                    (owner, limit),
+                )
+            ]
+        # A query per seal keeps one code path for "a seal with its verdict"
+        # (get). Fine for a page of 50 local rows; a JOIN when it matters.
+        return [r for r in map(self.get, ids) if r is not None]
 
     def detections(self, seal_id: str | None = None, context: Context | None = None) -> list[DetectionRow]:
         """Detector runs, oldest first, optionally filtered. For tests and analysis."""
