@@ -2,42 +2,12 @@
 
 [![CI](https://github.com/Naama-K/miniseal/actions/workflows/ci.yml/badge.svg)](https://github.com/Naama-K/miniseal/actions/workflows/ci.yml)
 
-**Prove a photo is yours, and that nobody has changed it, with one API call.**
+**Prove a photo is yours, and that nobody has changed it.**
 
-## The problem
-
-A regional news site publishes a photo of a flooded street. Two days later the
-same photo is spreading on social media with the water edited higher and a
-caption blaming the wrong city. Readers tag the newsroom: *is this real?* All
-the photo desk can say is "trust us, ours was different."
-
-AI image tools make this worse in both directions: fakes look real, and real
-photos get dismissed as "AI". Publishers need a way to say **"we published
-exactly these pixels, at this time"** that anyone can check without taking
-their word for it.
-
-## What MiniSeal does
-
-- **Seal.** The publisher's system sends an image to `POST /seal` and gets back a
-  sealed PNG that looks identical. The seal is a signature over the pixels,
-  carried inside the file.
-- **Verify.** Anyone uploads a copy to `POST /verify`, with no account needed, and gets:
-  - **Intact**: sealed by a known publisher, not one pixel changed. Shows who sealed it and when.
-  - **Tampered**: a seal is present but the image or the seal was changed, with the reason.
-  - **Unsealed**: no seal. Not proof of a fake, just no proof of origin.
-- **Second opinion.** Every check also scores how generated or edited the image
-  looks. The seal says *where it came from*; the detector estimates *whether the
-  content looks real*. Different questions, so both answers are shown.
-
-| Who | Need | Uses |
-|---|---|---|
-| **Publisher** (newsroom, photo agency) | Seal every image as it's published | API key, `POST /seal`, `GET /seals` |
-| **Fact-checker, reader** | Check a viral image in seconds | The web app at `/`, no account |
-| **Platform trust & safety** | Label uploads automatically | `POST /verify` from their pipeline |
-| **Operator** | Run it and manage keys | Docker, key CLI, `/health`, `/ready` |
-
-Publishers pay; verification is free and public, because a seal nobody can check
-is worth nothing. The full story is in [docs/product.md](docs/product.md).
+Publishers seal their images when they publish them. Anyone can later upload a
+copy and learn whether it's **intact**, **tampered** (and why) or **unsealed**,
+and who sealed it and when. Every check also includes a score estimating
+whether the image looks generated or edited.
 
 ## Quick start
 
