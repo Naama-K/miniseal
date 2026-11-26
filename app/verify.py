@@ -12,13 +12,15 @@ produced the file. Only our own key and our own registry are trusted.
 The checks, in order (the first failure is the reason reported):
 1. malformed_seal    - chunk can't be parsed (bad JSON, bad base64/hex, wrong types).
 2. unknown_key       - claims a key we don't hold (other issuer, or a rotated-out key).
-3. invalid_signature - our key did not sign the claimed hash: the seal was forged or edited.
+3. invalid_signature - our key did not sign this (seal_id, hash) pair: the seal was
+                       forged, or its hash or seal_id was edited.
 4. unknown_seal      - genuine signature, but the seal_id was never issued by us
                        (registry lost, or a seal_id invented by someone who can sign).
-5. registry_mismatch - the seal_id exists but belongs to a different image.
-                       Needed because the signature covers the hash only, not the
-                       seal_id: without this check, a valid seal could be relabelled
-                       with someone else's seal_id and borrow their owner and time.
+5. registry_mismatch - the seal_id exists but our record holds a different hash.
+                       The signature already binds seal_id to hash (v2), so this
+                       only fires if the registry itself was altered or corrupted,
+                       or our key leaked. Defence in depth: cheap, and it keeps a
+                       record from being shown for an image it doesn't describe.
 6. pixels_modified   - the seal is genuine and registered, but the pixels changed.
                        Checked last: hashing every pixel is the expensive step, and by
                        then we know which record the seal belongs to, so the answer
@@ -33,7 +35,7 @@ from enum import StrEnum
 
 from PIL import Image
 
-from app.crypto import Signer, pixel_hash
+from app.crypto import Signer, pixel_hash, seal_message
 from app.embed import MalformedSealError, extract
 from app.store import SealRecord, SealStore
 
@@ -81,16 +83,19 @@ def verify_image(img: Image.Image, signer: Signer, store: SealStore) -> VerifyRe
     try:
         signature = base64.b64decode(payload.signature, validate=True)
         claimed = bytes.fromhex(payload.pixel_hash)
-        seal_id = str(payload.seal_id)
+        seal_id = payload.seal_id
+        if not isinstance(seal_id, str):
+            raise TypeError("seal_id must be a string")
+        message = seal_message(seal_id, claimed)  # non-ASCII id / wrong hash size: ValueError
     except (binascii.Error, ValueError, TypeError):
         return _tampered(Reason.MALFORMED_SEAL)
 
     if payload.key_id != signer.key_id:
         return _tampered(Reason.UNKNOWN_KEY)
-    if not signer.verify(claimed, signature):
+    if not signer.verify(message, signature):
         return _tampered(Reason.INVALID_SIGNATURE)
 
-    # From here the claimed hash is genuine: our key signed it.
+    # From here seal_id and hash are genuine and belong together: our key signed them.
     record = store.get(seal_id)
     if record is None:
         return _tampered(Reason.UNKNOWN_SEAL)

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from PIL import Image, PngImagePlugin
 
 from app.config import Settings, get_settings
-from app.crypto import Signer, generate_key_b64, pixel_hash
+from app.crypto import Signer, generate_key_b64, pixel_hash, seal_message
 from app.embed import extract, load_image
 from app.main import create_app, get_owner, get_store, sealed_filename
 
@@ -62,7 +62,8 @@ def test_seal_returns_verifiable_png(client, key, fmt):
     signer = Signer.from_b64(key)
     digest = pixel_hash(img)
     assert payload.pixel_hash == digest.hex()
-    assert signer.verify(digest, base64.b64decode(payload.signature))
+    message = seal_message(payload.seal_id, digest)
+    assert signer.verify(message, base64.b64decode(payload.signature))
     assert payload.key_id == signer.key_id
     assert resp.headers["x-miniseal-seal-id"] == payload.seal_id
     assert resp.headers["x-miniseal-key-id"] == payload.key_id
