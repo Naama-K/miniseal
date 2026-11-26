@@ -1,6 +1,5 @@
-// MiniSeal customer UI. Plain JS, no build step, no third-party code.
-// Safety rule for this file: server data goes into the page with
-// textContent / text nodes only, never parsed as HTML.
+// MiniSeal web app. Plain JS, no build step, no third-party code.
+// Server data goes into the page as text only, never parsed as HTML.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -42,10 +41,8 @@ function showError(box, err) {
 
 // ---------- API ----------
 
-// The key is kept in sessionStorage: it survives a page reload but is
-// forgotten when the tab closes. (localStorage would keep it forever on
-// this computer.) Either way, any script on the page could read it, which
-// is why the server sends a strict Content-Security-Policy.
+// sessionStorage: survives a reload, forgotten when the tab closes. Any script
+// on the page could read it, which is why the server sends a strict CSP.
 const KEY_STORE = "miniseal.apiKey";
 const state = { key: sessionStorage.getItem(KEY_STORE), owner: null, sealed: null };
 
@@ -227,7 +224,7 @@ async function loadSeals() {
 }
 $("refresh-seals").onclick = loadSeals;
 
-// ---------- demo: what happens to a sealed file in the wild ----------
+// ---------- try it: what happens to a sealed file in the wild ----------
 // A PNG is a list of chunks: [length][type][data][crc]. The seal is one
 // iTXt chunk whose data starts with "miniseal\0".
 

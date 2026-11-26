@@ -116,8 +116,7 @@ def test_unknown_context_is_refused(db):
 
 
 def test_database_from_an_earlier_version_still_works(db):
-    # Files created before the detections table existed, including the
-    # short-lived version with detector_* columns on seals.
+    # A file created before the detections table existed, with extra columns on seals.
     with sqlite3.connect(db) as conn:
         conn.execute(
             "CREATE TABLE seals (seal_id TEXT PRIMARY KEY, pixel_hash TEXT NOT NULL, "

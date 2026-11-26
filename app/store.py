@@ -1,26 +1,14 @@
 """The registry: seals issued, and every detector run.
 
-Why keep a record at all, if the seal is inside the image?
-----------------------------------------------------------
-The embedded seal proves "this key signed these pixels". The registry adds
-what the image can't prove about itself: *when* it was sealed and *by whom*
-(the API key's owner). It is also our own audit trail: a seal_id that verifies
-cryptographically but is missing here was not issued by this service.
+The seal in the image proves "this key signed these pixels". The registry adds
+what the image can't prove about itself: when it was sealed and by whom. A seal
+that verifies but is missing here was not issued by this service.
 
-Two tables
-----------
-* seals      - one row per seal issued. The facts the seal certifies.
-* detections - one row per detector run: at sealing, at a refused sealing,
-               and at every verification. Opinions about content, kept apart
-               from the facts: different lifecycle (many per image, failed runs
-               included), and it is the data for insight later: score
-               distribution per model, latency, failure rate, how often the
-               policy refuses, whether a newer model disagrees with an older one.
-
-Why plain sqlite3 and not an ORM?
----------------------------------
-Two tables, a handful of queries. The standard library is enough, adds no
-dependency, and the SQL is short enough to read in an interview.
+* seals      - one row per seal: the facts the seal certifies.
+* detections - one row per detector run (at sealing, at a refused sealing, at
+               every verification). Opinions, kept apart from the facts: many
+               per image, failed runs included. The data for model quality,
+               latency and usage analysis.
 """
 
 from __future__ import annotations
@@ -68,11 +56,11 @@ Context = Literal["seal", "seal_rejected", "verify"]
 
 @dataclass(frozen=True)
 class RecordedDetection:
-    """The detector's verdict when an image was sealed (a successful run only)."""
+    """The detector's verdict when an image was sealed (successful runs only)."""
 
     model: str
     score: float
-    label: Label  # checked on read: an unknown value in the DB fails here
+    label: Label  # converted on read, so an unexpected stored value fails here
     threshold: float
 
 
@@ -83,8 +71,6 @@ class SealRecord:
     key_id: str
     owner: str
     created_at: datetime  # timezone-aware, UTC
-    # Filled in by get(), from the detections table. None if the detector
-    # failed at sealing time (policy "always") or no run was recorded.
     detection: RecordedDetection | None = None
 
 
@@ -124,7 +110,7 @@ def _insert_detection(
     conn.execute(
         "INSERT INTO detections (created_at, context, seal_id, pixel_hash, model, threshold, "
         "score, label, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (  # values only ever go through placeholders, never string formatting
+        (
             _iso(created_at),
             context,
             seal_id,
@@ -141,48 +127,37 @@ def _insert_detection(
 
 @contextmanager
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
-    """One short-lived connection: the only way this app talks to SQLite.
-
-    Shared by every store on the same file (seals, API keys), so all of them
-    get the same settings. Commits on success, rolls back on exception.
-    """
-    # timeout: wait for a concurrent writer instead of failing at once.
-    conn = sqlite3.connect(path, timeout=5)
-    # SQLite ignores REFERENCES unless this is switched on, per connection.
+    """A short-lived connection with this app's settings. Commits on success."""
+    conn = sqlite3.connect(path, timeout=5)  # wait for a concurrent writer
+    # SQLite ignores REFERENCES unless this is on, per connection.
     conn.execute("PRAGMA foreign_keys = ON")
-    # With WAL, NORMAL syncs to disk at checkpoints instead of every
-    # commit: much cheaper writes. A power cut can lose the last few
-    # commits but never corrupts the file. Per connection, like the above.
+    # With WAL, sync at checkpoints rather than every commit: a power cut can
+    # lose the last commits but never corrupts the file.
     conn.execute("PRAGMA synchronous = NORMAL")
     try:
-        with conn:  # commits on success, rolls back on exception
+        with conn:
             yield conn
     finally:
-        conn.close()  # `with conn` alone does NOT close the connection
+        conn.close()  # `with conn` commits but does not close
 
 
 def open_db(path: str | Path, schema: str) -> Path:
     """Create the file's folder, switch on WAL and apply `schema` (idempotent)."""
     path = Path(path)
-    # So a path like /data/miniseal.db works on a fresh Docker volume.
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as conn:
-        # WAL (write-ahead log): readers no longer block the writer and the
-        # writer no longer blocks readers, so GET /seals and /verify lookups
-        # keep flowing while a seal is being written. It is a property of
-        # the file (it persists), so setting it on open is enough.
-        # Caveat: WAL needs a local filesystem, not a network share.
+        # WAL: readers and the writer don't block each other. Persists in the
+        # file. Needs a local filesystem, not a network share.
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(schema)
     return path
 
 
 class SealStore:
-    """Thin wrapper over one SQLite file.
+    """The seals and detections tables in one SQLite file.
 
-    A new connection per operation: requests run on different threads
-    (sealing runs in the threadpool), and a sqlite3 connection must not be
-    shared across threads. Opening a local SQLite file is cheap.
+    A new connection per operation: requests run on different threads, and a
+    sqlite3 connection must not be shared across threads.
     """
 
     def __init__(self, path: str | Path):
@@ -192,15 +167,14 @@ class SealStore:
         return connect(self._path)
 
     def ping(self) -> None:
-        """Raise if the database can't be read right now (readiness check)."""
+        """Raise if the database can't be read right now."""
         with self._connect() as conn:
             conn.execute("SELECT 1 FROM seals LIMIT 1").fetchall()
 
     def add(self, record: SealRecord, run: DetectorRun | None = None) -> None:
-        """Record a seal and, if given, the detector run made while sealing it.
+        """Record a seal and the detector run made while sealing it.
 
-        One transaction: either both rows exist or neither does, so a seal can
-        never lose the verdict it was issued with.
+        One transaction: a seal never exists without the verdict it was issued with.
         """
         with self._connect() as conn:
             conn.execute(
@@ -251,12 +225,10 @@ class SealStore:
                     (owner, limit),
                 )
             ]
-        # A query per seal keeps one code path for "a seal with its verdict"
-        # (get). Fine for a page of 50 local rows; a JOIN when it matters.
         return [r for r in map(self.get, ids) if r is not None]
 
     def detections(self, seal_id: str | None = None, context: Context | None = None) -> list[DetectionRow]:
-        """Detector runs, oldest first, optionally filtered. For tests and analysis."""
+        """Detector runs, oldest first, optionally filtered."""
         sql = "SELECT * FROM detections WHERE 1 = 1"
         args: list[str] = []
         if seal_id is not None:

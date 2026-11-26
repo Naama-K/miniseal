@@ -1,29 +1,16 @@
 """API keys: who is calling. The owner recorded on every seal comes from here.
 
-Design, and why
----------------
-* Keys are random, from the OS's secure generator: 32 bytes = 256 bits.
-  Nobody can guess one, so brute force is not a threat worth designing for.
-* We store only a SHA-256 hash of each key, never the key itself. Whoever
-  reads the database (a backup, a leaked file) gets nothing they can call
-  the API with. The key is shown exactly once, when it is created.
-* A plain SHA-256 is enough here, unlike passwords (which need bcrypt or
-  argon2): slow hashing only protects low-entropy secrets that can be
-  guessed. Nobody can enumerate 2**256 keys, fast hash or not.
-* Lookup is by hash, so a timing difference in the database lookup tells an
-  attacker about the hash of what they sent, which they can't steer. That is
-  why there is no hand-rolled string comparison here at all.
-* Keys start with "msk_": recognisable in logs and code, so secret scanners
-  (e.g. GitHub's) can catch one that was committed by mistake.
-* Keys live in a table, not in an env var, so a leaked key can be revoked
-  at once, without a restart. Revoking a key does NOT invalidate the seals
-  made with it: those are signed by the service's key and stay valid.
-* Missing, wrong and revoked keys all get the same 401 with the same message,
-  so the answer doesn't tell an attacker whether a key ever existed.
+* Keys are 256 random bits, prefixed "msk_" so secret scanners can spot one
+  committed by mistake. A key is shown once, at creation.
+* Only a SHA-256 of each key is stored, so a leaked database can't be used to
+  call the API. A fast hash is enough: slow hashing (bcrypt) protects guessable
+  passwords, and nobody can guess 256 random bits.
+* Lookup is by hash, so there is no string comparison an attacker could time.
+* Revoking a key takes effect on the next request. Seals made with it stay
+  valid: they are signed by the service, not by the API key.
 
-Managing keys (no endpoint for it on purpose: creating keys over the API
-would need its own admin authentication):
-    python -m app.auth create alice
+Keys are managed by an operator, not over the API:
+    python -m app.auth create <owner>
     python -m app.auth list
     python -m app.auth revoke <id>
 """
@@ -41,6 +28,7 @@ from pathlib import Path
 from app.store import connect, open_db, utc_now
 
 KEY_PREFIX = "msk_"
+# Owner names appear in responses, logs and the UI: a safe character set only.
 OWNER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 _SCHEMA = """
@@ -64,7 +52,7 @@ def hash_key(key: str) -> str:
 
 @dataclass(frozen=True)
 class ApiKeyInfo:
-    """A key as listed: everything except the key, which we don't have."""
+    """A key as listed: everything except the key itself."""
 
     id: str
     owner: str
@@ -73,38 +61,32 @@ class ApiKeyInfo:
 
 
 class ApiKeyStore:
-    """The api_keys table. Lives in the same SQLite file as the seals."""
+    """The api_keys table, in the same SQLite file as the seals."""
 
     def __init__(self, path: str | Path):
         self._path = open_db(path, _SCHEMA)
 
     def create(self, owner: str) -> tuple[str, str]:
-        """New key for `owner` (admin: also for an existing owner, e.g. to
-        rotate). Returns (id, key): the only time the key exists in plain text."""
+        """New key for `owner`, new or existing (e.g. rotation). Returns (id, key)."""
         return self._insert(owner, new_owner_only=False)
 
     def signup(self, owner: str) -> tuple[str, str]:
-        """New key for a NEW owner only (self-service sign-up).
+        """New key for a new owner only, so sign-up can't take over an account.
 
-        Without this, signing up as "alice" would hand a stranger a key to
-        Alice's account and all her seals. The name check is case-insensitive
-        so "Alice" can't pose as "alice". Raises OwnerTakenError.
+        Case-insensitive: "Alice" can't pose as "alice". Raises OwnerTakenError.
         """
         return self._insert(owner, new_owner_only=True)
 
     def _insert(self, owner: str, new_owner_only: bool) -> tuple[str, str]:
-        # Owners are restricted to a safe character set because they appear
-        # in responses, logs, the UI and the CLI's output.
         if not OWNER_RE.fullmatch(owner):
             raise ValueError("owner must be 1-64 characters: letters, digits, '_', '.', '-'")
-        key = KEY_PREFIX + secrets.token_urlsafe(32)  # 32 random bytes
+        key = KEY_PREFIX + secrets.token_urlsafe(32)
         key_id = secrets.token_hex(4)
         values = (key_id, hash_key(key), owner, utc_now().isoformat())
         with connect(self._path) as conn:
             if new_owner_only:
-                # Check and insert in ONE statement: two simultaneous sign-ups
-                # for the same name can't both pass the check (no check-then-
-                # insert race; the same lost-update problem, solved in SQL).
+                # Check and insert in one statement, so two simultaneous
+                # sign-ups for the same name can't both succeed.
                 cur = conn.execute(
                     "INSERT INTO api_keys (id, key_hash, owner, created_at) "
                     "SELECT ?, ?, ?, ? WHERE NOT EXISTS "
@@ -122,7 +104,7 @@ class ApiKeyStore:
     def owner_for(self, key: str) -> str | None:
         """The owner of an active key, or None (unknown or revoked)."""
         if not key.startswith(KEY_PREFIX):
-            return None  # not one of ours: no need to touch the database
+            return None
         with connect(self._path) as conn:
             row = conn.execute(
                 "SELECT owner FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL",
@@ -151,7 +133,7 @@ class ApiKeyStore:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from app.config import get_settings  # here, so importing auth needs no settings
+    from app.config import get_settings
 
     parser = argparse.ArgumentParser(prog="python -m app.auth", description="Manage MiniSeal API keys.")
     parser.add_argument("--db", help="SQLite file (default: MINISEAL_DB_PATH)")

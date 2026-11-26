@@ -10,7 +10,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Demo: lets visitors create an account in the UI. No email check or
+      # Self-service sign-up in the web app. No email check or
       # rate limit behind it: turn it off for anything real, and issue keys
       # with: docker compose exec miniseal python -m app.auth create <name>
       MINISEAL_OPEN_SIGNUP: "true"
