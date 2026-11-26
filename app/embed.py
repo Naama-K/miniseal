@@ -22,7 +22,9 @@ from dataclasses import asdict, dataclass
 from PIL import Image, ImageOps, PngImagePlugin, UnidentifiedImageError
 
 CHUNK_KEY = "miniseal"
-PAYLOAD_VERSION = 1
+# v2: the signature covers seal_id + pixel hash (v1 signed the hash only).
+# v1 seals are rejected, not migrated: none were issued outside development.
+PAYLOAD_VERSION = 2
 ALGORITHM = "Ed25519"
 
 # Modes that survive a PNG round-trip unchanged; anything else is converted.
@@ -45,7 +47,7 @@ class MalformedSealError(ValueError):
 class SealPayload:
     seal_id: str
     pixel_hash: str  # hex SHA-256 of the canonical pixels
-    signature: str  # base64 Ed25519 signature over the raw hash bytes
+    signature: str  # base64 Ed25519 signature over crypto.seal_message(seal_id, hash)
     key_id: str  # which key signed (label only, see Signer.key_id)
     alg: str = ALGORITHM
     v: int = PAYLOAD_VERSION

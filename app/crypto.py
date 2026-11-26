@@ -94,6 +94,28 @@ def pixel_hash(image: Image.Image) -> bytes:
     return h.digest()
 
 
+# What the signature covers. Domain-separated from the pixel-hash domains, so a
+# signed seal message can never be mistaken for any other signed data.
+SEAL_MESSAGE_DOMAIN = b"miniseal/seal/v2\x00"
+_DIGEST_SIZE = hashlib.sha256().digest_size
+
+
+def seal_message(seal_id: str, digest: bytes) -> bytes:
+    """The exact bytes that get signed: binds the seal_id to the pixel hash.
+
+    Signing the hash alone (v1) left the seal_id unprotected: a genuine
+    signature could be moved onto a different seal_id and borrow that
+    record's owner and time. With the seal_id inside the message, changing
+    either the pixels or the seal_id breaks the signature.
+
+    Layout: domain | 32-byte digest | seal_id. The digest is fixed-size and
+    comes first, so the boundary is unambiguous without a length prefix.
+    """
+    if len(digest) != _DIGEST_SIZE:
+        raise ValueError(f"digest must be {_DIGEST_SIZE} bytes, got {len(digest)}")
+    return SEAL_MESSAGE_DOMAIN + digest + seal_id.encode("ascii")
+
+
 class SigningKeyError(ValueError):
     """Raised when the signing key is missing or malformed."""
 
@@ -121,12 +143,12 @@ class Signer:
             raise SigningKeyError(f"MINISEAL_SIGNING_KEY must decode to 32 bytes, got {len(raw)}")
         return cls(Ed25519PrivateKey.from_private_bytes(raw))
 
-    def sign(self, digest: bytes) -> bytes:
-        return self._private_key.sign(digest)
+    def sign(self, message: bytes) -> bytes:
+        return self._private_key.sign(message)
 
-    def verify(self, digest: bytes, signature: bytes) -> bool:
+    def verify(self, message: bytes, signature: bytes) -> bool:
         try:
-            self._public_key.verify(signature, digest)
+            self._public_key.verify(signature, message)
             return True
         except InvalidSignature:
             return False

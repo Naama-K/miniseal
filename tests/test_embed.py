@@ -4,7 +4,7 @@ import io
 import pytest
 from PIL import Image
 
-from app.crypto import Signer, generate_key_b64, pixel_hash
+from app.crypto import Signer, generate_key_b64, pixel_hash, seal_message
 from app.embed import (
     InvalidImageError,
     MalformedSealError,
@@ -14,6 +14,7 @@ from app.embed import (
     load_image,
     prepare_for_sealing,
 )
+from app.seal import seal_image
 
 
 def gradient(size=(32, 32), mode="RGB") -> Image.Image:
@@ -37,16 +38,7 @@ def fake_payload(**overrides) -> SealPayload:
 
 
 def seal(img: Image.Image, signer: Signer) -> tuple[bytes, SealPayload]:
-    """Mini seal pipeline, the same steps POST /seal will run in task 4."""
-    prepared = prepare_for_sealing(img)
-    digest = pixel_hash(prepared)
-    payload = SealPayload(
-        seal_id="test-seal",
-        pixel_hash=digest.hex(),
-        signature=base64.b64encode(signer.sign(digest)).decode(),
-        key_id=signer.key_id,
-    )
-    return embed(prepared, payload), payload
+    return seal_image(img, signer)  # the real pipeline, not a copy of it
 
 
 @pytest.fixture
@@ -81,7 +73,8 @@ def test_full_signature_survives_the_file(signer):
     payload = extract(decoded)
     digest = pixel_hash(decoded)
     assert digest.hex() == payload.pixel_hash
-    assert signer.verify(digest, base64.b64decode(payload.signature))
+    message = seal_message(payload.seal_id, digest)
+    assert signer.verify(message, base64.b64decode(payload.signature))
 
 
 # ---------- absent / stripped / malformed ----------

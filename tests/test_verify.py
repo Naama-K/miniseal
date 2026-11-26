@@ -2,6 +2,7 @@
 import dataclasses
 import io
 import json
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -150,6 +151,9 @@ def test_unparseable_seal_is_malformed(signer, store, chunk):
         ("signature", 12345),
         ("pixel_hash", "zz"),
         ("pixel_hash", None),
+        ("pixel_hash", "abcd"),  # valid hex, wrong length
+        ("seal_id", 12345),
+        ("seal_id", "שלום"),  # not ASCII
     ],
 )
 def test_wrong_field_contents_are_malformed_not_a_crash(signer, store, field, value):
@@ -191,16 +195,58 @@ def test_valid_seal_missing_from_registry_is_unknown_seal(signer, store):
     assert result.record is None
 
 
-def test_seal_id_swapped_to_another_users_is_registry_mismatch(signer, store):
+def test_seal_id_swapped_to_another_users_is_invalid_signature(signer, store):
     # Mallory seals her own image, then relabels it with Alice's seal_id to
-    # borrow Alice's identity. The signature still verifies (it covers only
-    # the hash), so only the registry check catches this.
+    # borrow Alice's identity. The signature covers the seal_id (v2), so the
+    # relabelled seal no longer verifies.
     _, alice = seal_and_register(signer, store, img=photo((1, 2, 3)), owner="alice")
     mallory_png, mallory = seal_and_register(signer, store, img=photo((9, 9, 9)), owner="mallory")
     forged = with_payload(mallory_png, dataclasses.replace(mallory, seal_id=alice.seal_id))
     result = check(forged, signer, store)
-    assert result.reason == Reason.REGISTRY_MISMATCH
+    assert result.reason == Reason.INVALID_SIGNATURE
     assert result.record is None  # Alice's details must not be shown
+
+
+def test_same_image_relabelled_to_another_owner_is_invalid_signature(signer, store):
+    # The case the registry check alone could NOT catch: Alice and Bob seal
+    # the SAME picture, so both records hold the same pixel hash. With v1
+    # (hash-only signature), putting Bob's seal_id into Alice's copy passed
+    # every check and showed Bob as the owner. v2 binds the id to the signature.
+    same = photo((42, 42, 42))
+    alice_png, alice = seal_and_register(signer, store, img=same, owner="alice")
+    _, bob = seal_and_register(signer, store, img=same, owner="bob")
+    assert alice.pixel_hash == bob.pixel_hash
+    forged = with_payload(alice_png, dataclasses.replace(alice, seal_id=bob.seal_id))
+    result = check(forged, signer, store)
+    assert result.reason == Reason.INVALID_SIGNATURE
+    assert result.record is None
+
+
+def test_same_image_sealed_twice_gets_different_signatures(signer, store):
+    same = photo((42, 42, 42))
+    _, first = seal_and_register(signer, store, img=same)
+    _, second = seal_and_register(signer, store, img=same)
+    assert first.pixel_hash == second.pixel_hash  # same pixels...
+    assert first.signature != second.signature  # ...but each seal signs its own id
+
+
+def test_altered_registry_record_is_registry_mismatch(signer, store, tmp_path):
+    # The signature is fine, but our own record was changed behind our back
+    # (corruption, or someone with database access). Defence in depth.
+    png, payload = seal_and_register(signer, store)
+    with sqlite3.connect(tmp_path / "seals.db") as conn:
+        conn.execute("UPDATE seals SET pixel_hash = ? WHERE seal_id = ?", ("00" * 32, payload.seal_id))
+    result = check(png, signer, store)
+    assert result.reason == Reason.REGISTRY_MISMATCH
+    assert result.record is None
+
+
+def test_v1_seal_is_rejected_as_malformed(signer, store):
+    # v1 signed the hash only; accepting it would reopen the relabelling hole.
+    png, payload = seal_and_register(signer, store)
+    old = json.loads(payload.to_json())
+    old["v"] = 1
+    assert check(resave(load(png), json.dumps(old)), signer, store).reason == Reason.MALFORMED_SEAL
 
 
 # ---------- POST /verify ----------

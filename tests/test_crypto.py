@@ -3,7 +3,7 @@ import io
 import pytest
 from PIL import Image, PngImagePlugin
 
-from app.crypto import Signer, SigningKeyError, generate_key_b64, pixel_hash
+from app.crypto import SEAL_MESSAGE_DOMAIN, Signer, SigningKeyError, generate_key_b64, pixel_hash, seal_message
 
 
 def make_image(color=(200, 100, 50), size=(8, 8)) -> Image.Image:
@@ -148,3 +148,37 @@ def test_8bit_hash_unchanged_by_this_fix():
         b"miniseal/pixels/v1" + struct.pack(">II", 2, 1) + img.convert("RGBA").tobytes()
     ).digest()
     assert pixel_hash(img) == expected
+
+
+# ---------- what the signature covers ----------
+
+DIGEST = bytes(range(32))
+
+
+def test_seal_message_layout():
+    msg = seal_message("abc123", DIGEST)
+    assert msg == SEAL_MESSAGE_DOMAIN + DIGEST + b"abc123"
+
+
+def test_seal_message_differs_per_seal_id_and_per_digest():
+    assert seal_message("a" * 32, DIGEST) != seal_message("b" * 32, DIGEST)
+    assert seal_message("a" * 32, DIGEST) != seal_message("a" * 32, bytes(32))
+
+
+def test_signature_does_not_transfer_to_another_seal_id():
+    signer = Signer.from_b64(generate_key_b64())
+    sig = signer.sign(seal_message("a" * 32, DIGEST))
+    assert signer.verify(seal_message("a" * 32, DIGEST), sig)
+    assert not signer.verify(seal_message("b" * 32, DIGEST), sig)
+    assert not signer.verify(DIGEST, sig)  # nor to a bare (v1-style) hash
+
+
+@pytest.mark.parametrize("digest", [b"", bytes(31), bytes(33)])
+def test_seal_message_rejects_wrong_digest_size(digest):
+    with pytest.raises(ValueError):
+        seal_message("a" * 32, digest)
+
+
+def test_seal_message_rejects_non_ascii_id():
+    with pytest.raises(ValueError):  # UnicodeEncodeError is a ValueError
+        seal_message("שלום", DIGEST)
