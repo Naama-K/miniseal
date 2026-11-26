@@ -1,4 +1,8 @@
 # docker compose up --build   then open http://localhost:8000
+# Fixed project name: the volume is "miniseal_miniseal-data" whatever the
+# folder is called, so a re-clone finds the same data (and signing key).
+name: miniseal
+
 services:
   miniseal:
     build: .

@@ -124,3 +124,9 @@ def test_container_runs_as_non_root_with_a_readiness_healthcheck():
 def test_entrypoint_has_unix_line_endings():
     # A CRLF shell script fails inside Linux with a confusing error.
     assert b"\r\n" not in (ROOT / "docker-entrypoint.sh").read_bytes()
+
+
+def test_compose_project_name_is_fixed():
+    # The volume (all seals and the signing key) is named after the project.
+    # Without a fixed name, cloning into another folder silently starts empty.
+    assert "\nname: miniseal\n" in (ROOT / "compose.yaml").read_text()
