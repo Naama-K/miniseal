@@ -25,6 +25,7 @@ Design
   label, latency, error. The registry logs each one (detections table), so
   model quality, latency and failure rate can be analysed later.
 """
+
 from __future__ import annotations
 
 import hashlib

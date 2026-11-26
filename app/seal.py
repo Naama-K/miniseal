@@ -2,6 +2,7 @@
 
 Kept free of FastAPI so it can be tested and reused (CLI, batch jobs) directly.
 """
+
 from __future__ import annotations
 
 import base64

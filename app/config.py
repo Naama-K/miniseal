@@ -1,4 +1,5 @@
 """Application settings, loaded from environment variables (prefix MINISEAL_)."""
+
 from functools import lru_cache
 from typing import Literal
 

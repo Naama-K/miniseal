@@ -5,6 +5,7 @@ real deployment goes through: config from environment variables, uvicorn's
 HTTP parsing, a real socket, and a process that can be stopped and started
 again against the same database file (what the Docker volume relies on).
 """
+
 import io
 import os
 import socket
@@ -22,7 +23,6 @@ from app.crypto import generate_key_b64
 from app.embed import CHUNK_KEY
 
 ROOT = Path(__file__).parents[2]
-
 
 
 def pytest_collection_modifyitems(items):
@@ -116,7 +116,10 @@ class Server:
         """Run the admin CLI against this server's database, as an operator would."""
         return subprocess.run(
             [sys.executable, "-m", "app.auth", "--db", str(self.db), *args],
-            cwd=ROOT, capture_output=True, text=True, timeout=30,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
 
@@ -135,6 +138,7 @@ def server(tmp_path):
 
 
 # ---------- helpers shared by the integration tests ----------
+
 
 def image_bytes(fmt="PNG", size=(64, 48), color=(30, 120, 200), mode="RGB", **save_kw) -> bytes:
     out = io.BytesIO()

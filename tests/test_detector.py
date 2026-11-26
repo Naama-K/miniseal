@@ -1,4 +1,5 @@
 """The detector interface, the dummy, labelling policy, and /verify wiring."""
+
 import io
 import math
 
@@ -43,6 +44,7 @@ class CrashingDetector:
 
 # ---------- the dummy ----------
 
+
 def test_dummy_is_deterministic_and_in_range():
     d = DummyDetector()
     scores = {d.score(photo()) for _ in range(3)}
@@ -76,6 +78,7 @@ def test_dummy_handles_other_modes(mode, color):
 
 # ---------- labelling policy ----------
 
+
 @pytest.mark.parametrize(
     "score, threshold, label",
     [
@@ -98,6 +101,7 @@ def test_threshold_setting_must_be_in_range(bad):
 
 
 # ---------- run_detector ----------
+
 
 def test_run_detector_reports_model_score_label_threshold_and_latency():
     det = run_detector(FixedDetector(0.8, name="m1"), photo(), threshold=0.5)
@@ -134,6 +138,7 @@ def test_out_of_range_score_is_a_failed_run(value):
 
 
 # ---------- /verify ----------
+
 
 def make_client(tmp_path, detector=None, **settings_kw):
     settings = Settings(

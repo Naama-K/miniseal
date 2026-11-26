@@ -3,7 +3,14 @@ import io
 import pytest
 from PIL import Image, PngImagePlugin
 
-from app.crypto import SEAL_MESSAGE_DOMAIN, Signer, SigningKeyError, generate_key_b64, pixel_hash, seal_message
+from app.crypto import (
+    SEAL_MESSAGE_DOMAIN,
+    Signer,
+    SigningKeyError,
+    generate_key_b64,
+    pixel_hash,
+    seal_message,
+)
 
 
 def make_image(color=(200, 100, 50), size=(8, 8)) -> Image.Image:
@@ -11,6 +18,7 @@ def make_image(color=(200, 100, 50), size=(8, 8)) -> Image.Image:
 
 
 # ---------- pixel_hash ----------
+
 
 def test_hash_is_deterministic():
     assert pixel_hash(make_image()) == pixel_hash(make_image())
@@ -52,6 +60,7 @@ def test_mode_is_normalized():
 
 
 # ---------- Signer ----------
+
 
 @pytest.fixture
 def signer() -> Signer:

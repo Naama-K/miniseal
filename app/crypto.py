@@ -9,6 +9,7 @@ decoded pixels ignores metadata and container details (chunk order, compression
 level, EXIF), so it stays stable across embedding, and changes when even one
 pixel changes, which is exactly the property we want.
 """
+
 from __future__ import annotations
 
 import array
@@ -131,10 +132,7 @@ class Signer:
     def from_b64(cls, key_b64: str | None) -> "Signer":
         """Load from a base64-encoded 32-byte Ed25519 seed (the env var format)."""
         if not key_b64:
-            raise SigningKeyError(
-                "MINISEAL_SIGNING_KEY is not set. "
-                "Generate one with: python -m app.crypto"
-            )
+            raise SigningKeyError("MINISEAL_SIGNING_KEY is not set. Generate one with: python -m app.crypto")
         try:
             raw = base64.b64decode(key_b64, validate=True)
         except ValueError as exc:

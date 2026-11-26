@@ -22,6 +22,7 @@ Why plain sqlite3 and not an ORM?
 Two tables, a handful of queries. The standard library is enough, adds no
 dependency, and the SQL is short enough to read in an interview.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -263,7 +264,4 @@ class SealStore:
             sql, args = sql + " AND context = ?", [*args, context]
         with self._connect() as conn:
             rows = conn.execute(sql + " ORDER BY id", args).fetchall()
-        return [
-            DetectionRow(r[0], datetime.fromisoformat(r[1]), *r[2:])
-            for r in rows
-        ]
+        return [DetectionRow(r[0], datetime.fromisoformat(r[1]), *r[2:]) for r in rows]

@@ -48,6 +48,7 @@ def signer() -> Signer:
 
 # ---------- round trip ----------
 
+
 def test_embed_then_extract_roundtrip():
     png = embed(gradient(), fake_payload())
     assert extract(load_image(png)) == fake_payload()
@@ -79,6 +80,7 @@ def test_full_signature_survives_the_file(signer):
 
 # ---------- absent / stripped / malformed ----------
 
+
 def test_plain_png_has_no_seal():
     assert extract(load_image(to_bytes(gradient(), "PNG"))) is None
 
@@ -106,6 +108,7 @@ def test_malformed_chunk_raises(raw):
 
 
 # ---------- input handling ----------
+
 
 def test_garbage_bytes_rejected():
     with pytest.raises(InvalidImageError):

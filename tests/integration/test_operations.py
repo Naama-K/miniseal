@@ -1,4 +1,5 @@
 """What operators live through: restarts, key changes, missing config, a busy database."""
+
 import sqlite3
 import threading
 

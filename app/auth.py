@@ -27,6 +27,7 @@ would need its own admin authentication):
     python -m app.auth list
     python -m app.auth revoke <id>
 """
+
 from __future__ import annotations
 
 import argparse

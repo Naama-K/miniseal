@@ -1,4 +1,5 @@
 """FastAPI entrypoint."""
+
 import logging
 import re
 from datetime import datetime
@@ -88,7 +89,9 @@ def get_key_store(settings: Settings = Depends(get_settings)) -> ApiKeyStore:
 # auto_error=False: we raise our own 401 (FastAPI's default is 403, which
 # means "I know who you are and you may not", the wrong answer for "who are you?").
 # Declaring it with Security also adds the "Authorize" button to /docs.
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)")
+api_key_header = APIKeyHeader(
+    name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)"
+)
 
 
 def get_owner(

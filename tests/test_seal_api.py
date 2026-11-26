@@ -51,6 +51,7 @@ def post(client, data: bytes, filename="photo.png", content_type="image/png"):
 
 # ---------- happy path ----------
 
+
 @pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
 def test_seal_returns_verifiable_png(client, key, fmt):
     resp = post(client, image_bytes(fmt), filename=f"photo.{fmt.lower()}")
@@ -98,6 +99,7 @@ def test_sealed_filename_is_header_safe(original, expected):
 
 # ---------- rejections ----------
 
+
 def test_missing_key_is_503_and_health_still_works(make_client):
     client = make_client(signing_key=None)
     resp = post(client, image_bytes())
@@ -138,6 +140,7 @@ def test_malformed_seal_chunk_is_409(client):
 
 
 # ---------- registry: GET /seals/{id} ----------
+
 
 def db_rows(client) -> int:
     path = client.app.dependency_overrides[get_settings]().db_path

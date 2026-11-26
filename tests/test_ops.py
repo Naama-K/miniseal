@@ -1,4 +1,5 @@
 """Running it: the signing key from a file (containers), readiness, Docker hygiene."""
+
 import sys
 import threading
 from pathlib import Path
@@ -21,6 +22,7 @@ def client(**settings_kw) -> TestClient:
 
 
 # ---------- ensure_key_file (run by the container on start) ----------
+
 
 def test_key_file_is_created_once_and_then_reused(tmp_path):
     path = tmp_path / "nested" / "signing.key"
@@ -58,6 +60,7 @@ def test_existing_garbage_key_file_is_an_error_not_replaced(tmp_path):
 
 # ---------- the app reading the key file ----------
 
+
 def test_app_signs_with_the_key_from_the_file(tmp_path):
     key_file = tmp_path / "signing.key"
     expected = ensure_key_file(key_file).key_id
@@ -85,6 +88,7 @@ def test_key_and_key_file_together_is_refused(tmp_path):
 
 # ---------- /ready ----------
 
+
 def test_ready_when_key_and_database_are_fine(tmp_path):
     resp = client(signing_key=generate_key_b64(), db_path=str(tmp_path / "x.db")).get("/ready")
     assert resp.status_code == 200
@@ -108,6 +112,7 @@ def test_not_ready_without_a_signing_key(tmp_path):
 
 
 # ---------- Docker hygiene ----------
+
 
 def test_secrets_and_local_data_never_enter_the_image():
     ignored = (ROOT / ".dockerignore").read_text().split()

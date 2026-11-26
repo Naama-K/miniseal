@@ -1,4 +1,5 @@
 """Whole customer journeys against a running server, start to finish."""
+
 from tests.integration.conftest import image_bytes, reencode_as_jpeg, seal, signup, tamper, verify
 
 

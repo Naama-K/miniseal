@@ -1,4 +1,5 @@
 """Many customers at once against one real server process."""
+
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -43,8 +44,13 @@ def test_parallel_seals_and_verifies_stay_consistent(server):
         q = lambda sql: conn.execute(sql).fetchone()[0]
         assert q("SELECT COUNT(*) FROM seals") == total_seals
         assert q("SELECT COUNT(*) FROM detections WHERE context = 'seal'") == total_seals
-        assert q("SELECT COUNT(*) FROM seals s WHERE NOT EXISTS "
-                 "(SELECT 1 FROM detections d WHERE d.seal_id = s.seal_id AND d.context = 'seal')") == 0
+        assert (
+            q(
+                "SELECT COUNT(*) FROM seals s WHERE NOT EXISTS "
+                "(SELECT 1 FROM detections d WHERE d.seal_id = s.seal_id AND d.context = 'seal')"
+            )
+            == 0
+        )
         # Every verify was logged and linked to its proven seal: the 32 run
         # under load plus the 32 checks of freshly sealed images above.
         verifies = len(verified) + len(sealed)

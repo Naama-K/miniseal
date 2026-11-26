@@ -13,6 +13,7 @@ Design
   many editors) removes the chunk and the image then reads as unsealed.
   Surviving that needs a watermark inside the pixels.
 """
+
 from __future__ import annotations
 
 import io
