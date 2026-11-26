@@ -15,8 +15,10 @@ from __future__ import annotations
 import array
 import base64
 import hashlib
+import os
 import struct
 import sys
+from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -66,9 +68,9 @@ def _wide_canonical(image: Image.Image) -> tuple[bytes, bytes] | None:
     if image.mode in _SLOW_INT_MODES:
         return b"i32", _be_bytes(array.array("i", image.get_flattened_data()))
     if image.mode == "F":
-        samples = array.array("f")  # Pillow "F" is float32: lossless
-        samples.frombytes(image.tobytes("raw", "F"))
-        return b"f32", _be_bytes(samples)
+        floats = array.array("f")  # Pillow "F" is float32: lossless
+        floats.frombytes(image.tobytes("raw", "F"))
+        return b"f32", _be_bytes(floats)
     return None
 
 
@@ -178,7 +180,7 @@ def generate_key_b64() -> str:
     return base64.b64encode(raw).decode()
 
 
-def ensure_key_file(path) -> Signer:
+def ensure_key_file(path: str | os.PathLike[str]) -> Signer:
     """Load the signing key from `path`, creating it first if it doesn't exist.
 
     For containers: the key is generated once, on first start, inside the
@@ -190,9 +192,6 @@ def ensure_key_file(path) -> Signer:
     whoever has the volume can sign. Production keeps it in a KMS/HSM, and
     losing the volume means losing the key: every seal becomes unknown_key.
     """
-    import os
-    from pathlib import Path
-
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:

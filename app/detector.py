@@ -71,6 +71,17 @@ class DetectorRun:
     def ok(self) -> bool:
         return self.error is None
 
+    @property
+    def verdict(self) -> tuple[float, Label] | None:
+        """(score, label) of a successful run, None for a failed one.
+
+        Callers get both values in one step, and the type checker knows
+        they're set: no "ok, so score can't be None here" assumptions.
+        """
+        if self.score is None or self.label is None:
+            return None
+        return self.score, self.label
+
 
 class DummyDetector:
     """Deterministic stand-in for a real model.

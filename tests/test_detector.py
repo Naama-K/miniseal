@@ -200,3 +200,9 @@ def test_detector_failure_keeps_the_seal_verdict(tmp_path):
     assert resp.status_code == 200
     assert resp.json()["status"] == "sealed_intact"
     assert resp.json()["detector"] is None
+
+
+def test_verdict_is_score_and_label_only_for_a_successful_run():
+    good = run_detector(FixedDetector(0.8), photo(), 0.5)
+    assert good.verdict == (0.8, Label.SUSPICIOUS)
+    assert run_detector(CrashingDetector(), photo(), 0.5).verdict is None
