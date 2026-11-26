@@ -25,6 +25,8 @@
   .bar { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; gap: 16px; }
   .logo { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
   .logo span { color: var(--brand); }
+  .tagline { color: var(--muted); font-size: 14px; }
+  @media (max-width: 640px) { .tagline { display: none; } }
   .who { margin-left: auto; color: var(--muted); font-size: 14px; display: flex; gap: 10px; align-items: center; }
   .who b { color: var(--ink); }
   main { max-width: 960px; margin: 0 auto; padding: 20px; }
@@ -80,6 +82,7 @@
 <header>
   <div class="bar">
     <div class="logo">Mini<span>Seal</span></div>
+    <div class="tagline">Prove a photo is yours, and that nobody has changed it.</div>
     <div class="who" id="who"></div>
   </div>
 </header>
@@ -142,7 +145,7 @@
             </div>
           </div>
           <div class="demo">
-            <h3>Demo: what happens to a sealed file out in the world?</h3>
+            <h3>Try it: what happens to a sealed file out in the world?</h3>
             <p class="note" style="margin:0 0 10px">These run in your browser, on the file you just sealed, and send the result to Verify.</p>
             <div class="actions" style="margin-top:0">
               <button class="btn" id="demo-tamper">Edit one pixel, keep the seal (an attacker)</button>
