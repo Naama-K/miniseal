@@ -1,7 +1,4 @@
-"""The sealing pipeline: image in, sealed PNG + payload out.
-
-Kept free of FastAPI so it can be tested and reused (CLI, batch jobs) directly.
-"""
+"""The sealing pipeline: image in, sealed PNG and payload out. No web framework here."""
 
 from __future__ import annotations
 
@@ -16,8 +13,7 @@ from app.embed import SealPayload, embed, prepare_for_sealing
 
 def seal_image(img: Image.Image, signer: Signer) -> tuple[bytes, SealPayload]:
     """Hash, sign and embed. Returns the sealed PNG bytes and the payload written."""
-    # Hash the *prepared* image: it is exactly what ends up in the PNG.
-    prepared = prepare_for_sealing(img)
+    prepared = prepare_for_sealing(img)  # hash exactly what ends up in the PNG
     digest = pixel_hash(prepared)
     seal_id = uuid.uuid4().hex
     payload = SealPayload(

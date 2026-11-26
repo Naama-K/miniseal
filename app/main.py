@@ -1,4 +1,4 @@
-"""FastAPI entrypoint."""
+"""FastAPI entrypoint: HTTP routes and the wiring of their dependencies."""
 
 import logging
 import re
@@ -33,14 +33,12 @@ from app.verify import Reason, Status, VerifyResult, verify_image
 
 @lru_cache
 def _signer_for(key_b64: str) -> Signer:
-    # One Signer per key value; failures raise and are not cached.
     return Signer.from_b64(key_b64)
 
 
 @lru_cache
 def _signer_from_file(path: str) -> Signer:
-    # Cached per path; a failure (missing file) is not cached, so creating
-    # the file later fixes the service without a restart.
+    # Failures aren't cached: creating the file later fixes the service without a restart.
     try:
         text = Path(path).read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError) as exc:
@@ -52,8 +50,7 @@ def load_signer(settings: Settings) -> Signer:
     """The configured signer, or SigningKeyError saying what to fix."""
     key = settings.signing_key.get_secret_value() if settings.signing_key else None
     if key and settings.signing_key_file:
-        # Two sources could disagree; picking one silently would sign with
-        # a key the operator didn't expect.
+        # Picking one silently could sign with a key the operator didn't expect.
         raise SigningKeyError("set MINISEAL_SIGNING_KEY or MINISEAL_SIGNING_KEY_FILE, not both")
     if settings.signing_key_file:
         return _signer_from_file(settings.signing_key_file)
@@ -61,8 +58,7 @@ def load_signer(settings: Settings) -> Signer:
 
 
 def get_signer(settings: Settings = Depends(get_settings)) -> Signer:
-    """The configured signer. 503 (not a crash at startup) when no key is set,
-    so /health keeps working and the error says exactly what to fix."""
+    """503 rather than a crash at startup, so /health still answers."""
     try:
         return load_signer(settings)
     except SigningKeyError as exc:
@@ -71,7 +67,6 @@ def get_signer(settings: Settings = Depends(get_settings)) -> Signer:
 
 @lru_cache
 def _store_for(path: str) -> SealStore:
-    # One store per path: the schema check runs once, not on every request.
     return SealStore(path)
 
 
@@ -81,7 +76,7 @@ def get_store(settings: Settings = Depends(get_settings)) -> SealStore:
 
 @lru_cache
 def get_detector() -> Detector:
-    """The content detector. The one line to change for a real model."""
+    """The content detector: the one line to change for a real model."""
     return DummyDetector()
 
 
@@ -94,9 +89,8 @@ def get_key_store(settings: Settings = Depends(get_settings)) -> ApiKeyStore:
     return _key_store_for(settings.db_path)
 
 
-# auto_error=False: we raise our own 401 (FastAPI's default is 403, which
-# means "I know who you are and you may not", the wrong answer for "who are you?").
-# Declaring it with Security also adds the "Authorize" button to /docs.
+# auto_error=False: FastAPI would answer 403 ("you may not"); a missing key is
+# a 401 ("who are you?"), raised in get_owner.
 api_key_header = APIKeyHeader(
     name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)"
 )
@@ -106,44 +100,40 @@ def get_owner(
     key: str | None = Security(api_key_header),
     keys: ApiKeyStore = Depends(get_key_store),
 ) -> str:
-    """Who is calling, from their API key. 401 if missing, wrong or revoked.
+    """Who is calling, from their API key.
 
-    One message for all three: the answer must not tell an attacker whether
-    a key exists or was revoked. (Our own logs can tell them apart.)
+    Missing, wrong and revoked keys get the same 401, so the answer never
+    tells an attacker whether a key exists.
     """
     owner = keys.owner_for(key) if key else None
     if owner is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "missing or invalid API key (send it in the X-API-Key header)",
-            # 401 must say how to authenticate (RFC 9110).
             headers={"WWW-Authenticate": "ApiKey"},
         )
     return owner
 
 
 class DetectionAtSeal(BaseModel):
-    """The detector's verdict at the moment of sealing, kept for the record.
-    An opinion about the content, not part of what the seal certifies."""
+    """The detector's verdict when the image was sealed. An opinion, not
+    part of what the seal certifies."""
 
     model: str
     score: float
     label: Label
-    threshold: float  # the label is only meaningful together with it
+    threshold: float
 
 
 class SealInfo(BaseModel):
-    """Public record of a seal. The signature itself is not here: it lives
-    in the image, and this endpoint answers "when and by whom", not "is it valid"."""
+    """The registry record of a seal: when and by whom."""
 
     seal_id: str
     created_at: datetime
     pixel_hash: str
     key_id: str
     owner: str
-    # Null if the detector failed at sealing time (only possible under
-    # policy "always"); the failure itself is in the detections table.
-    detector_at_seal: DetectionAtSeal | None = None
+    detector_at_seal: DetectionAtSeal | None = None  # null if the detector failed
 
     @classmethod
     def from_record(cls, record: SealRecord) -> SealInfo:
@@ -167,9 +157,9 @@ class SignupRequest(BaseModel):
 
 
 class SignupResponse(BaseModel):
-    id: str  # the key's public id
+    id: str
     owner: str
-    key: str  # shown this once; we only keep its hash
+    key: str  # shown once; only its hash is stored
 
 
 class DetectorInfo(BaseModel):
@@ -181,20 +171,17 @@ class DetectorInfo(BaseModel):
 
 class VerifyResponse(BaseModel):
     status: Status
-    # Why it is tampered; null when intact or unsealed.
-    reason: Reason | None = None
-    # Who sealed it and when. Only set once the seal is proven to be ours and
-    # to belong to this image's seal_id (see app/verify.py), so a forged seal
-    # can never borrow another user's identity.
+    reason: Reason | None = None  # why it is tampered
+    # Set only when the seal is proven ours, so a forged seal can never show
+    # someone else's identity.
     seal: SealInfo | None = None
-    # Content check, independent of the seal. Null only if the detector failed:
-    # the seal verdict is still valid and is returned regardless.
+    # Independent of the seal; null only if the detector failed.
     detector: DetectorInfo | None = None
 
 
 def sealed_filename(original: str | None) -> str:
     """'My Photo.jpg' -> 'My_Photo.sealed.png'. Only safe characters reach the header."""
-    name = re.split(r"[\\/]", original or "")[-1]  # drop any client-side path
+    name = re.split(r"[\\/]", original or "")[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "image"
     return f"{stem[:100]}.sealed.png"
@@ -202,8 +189,7 @@ def sealed_filename(original: str | None) -> str:
 
 async def read_upload(file: UploadFile, settings: Settings) -> bytes:
     """The upload's bytes, or 413 if over the byte limit."""
-    # Read one byte past the limit: enough to know it's too big, without
-    # pulling an arbitrarily large upload into memory.
+    # One byte past the limit is enough to know, without reading the rest.
     data = await file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "file is too large")
@@ -226,8 +212,7 @@ log = logging.getLogger(__name__)
 def _log_detection_best_effort(
     store: SealStore, run: DetectorRun, context: Context, pixel_hash_hex: str, seal_id: str | None = None
 ) -> None:
-    """Analytics, not part of the answer: a failed log write must never fail
-    the request. (Seal-time runs are NOT written this way: see store.add.)"""
+    """Analytics only: a failed log write never fails the request."""
     try:
         store.log_detection(run, context, pixel_hash_hex, seal_id)
     except Exception:
@@ -237,10 +222,9 @@ def _log_detection_best_effort(
 def _check_seal_policy(run: DetectorRun, settings: Settings) -> None:
     """Raise if the configured policy forbids sealing this image."""
     if settings.seal_policy != "reject_suspicious":
-        return  # "always": the verdict is recorded, never used as a gate
+        return
     if not run.ok:
-        # Fail closed: this policy promises we only seal checked images,
-        # so an image we could not check is not sealed.
+        # Fail closed: the policy promises only checked images get sealed.
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "detector unavailable; policy reject_suspicious requires a check before sealing",
@@ -262,27 +246,22 @@ def _seal_bytes(
     """Upload bytes -> (sealed PNG, payload, detector run). Runs in the threadpool."""
     img = decode_upload(data, settings)
 
-    # Refuse to overwrite an existing seal: re-sealing would silently replace
-    # the original seal_id and hide that the image was already sealed.
+    # Re-sealing would silently replace the original seal_id.
     if has_seal_chunk(img):
         raise HTTPException(status.HTTP_409_CONFLICT, "image is already sealed")
 
-    # Score the prepared image: exactly the pixels that get signed, and the
-    # ones /verify will see later. (seal_image prepares again; that's a no-op
-    # on an already prepared image.)
+    # Score exactly the pixels that get signed.
     prepared = prepare_for_sealing(img)
     run = run_detector(detector, prepared, settings.detector_threshold)
     try:
-        _check_seal_policy(run, settings)  # before signing: a refused image gets no seal
+        _check_seal_policy(run, settings)
     except HTTPException:
-        # Refusals are worth counting ("how often does the policy bite?").
         _log_detection_best_effort(store, run, "seal_rejected", pixel_hash(prepared).hex())
         raise
 
     sealed, payload = seal_image(prepared, signer)
-    # Record before returning: a seal we hand out but never recorded would
-    # later look like it wasn't issued by us. If the insert fails, the
-    # request fails and the client never gets an unregistered seal.
+    # Recorded before the image is returned: if this fails, the client never
+    # receives a seal we have no record of.
     store.add(
         SealRecord(
             seal_id=payload.seal_id,
@@ -291,17 +270,15 @@ def _seal_bytes(
             owner=owner,
             created_at=utc_now(),
         ),
-        run,  # same transaction as the seal: the verdict it was issued with is never lost
+        run,
     )
     return sealed, payload, run
 
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The UI is our own files only: no third-party scripts, nothing inline but
-# CSS. If an attacker ever got text into the page (e.g. via an owner name),
-# the browser still refuses to run it. The API key sits in that page, so
-# this matters. img-src blob: is for previews of the user's own files.
+# Only our own scripts may run, so injected text can never execute in the page
+# that holds the API key. blob: is for previews of the user's own files.
 UI_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
@@ -313,14 +290,13 @@ UI_HEADERS = {
 
 
 def create_app() -> FastAPI:
-    # App factory: lets tests build a fresh app with different settings.
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version=settings.version)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
     def ui() -> FileResponse:
-        """The single-page customer UI. Same origin as the API: no CORS needed."""
+        """The web app: sign up, seal, and verify."""
         return FileResponse(STATIC_DIR / "index.html", headers=UI_HEADERS)
 
     @app.post(
@@ -336,33 +312,29 @@ def create_app() -> FastAPI:
         settings: Settings = Depends(get_settings),
         keys: ApiKeyStore = Depends(get_key_store),
     ) -> SignupResponse:
-        """Demo self-service sign-up: choose a free name, get an API key once.
+        """Self-service sign-up: choose a free name, get an API key (shown once).
 
-        Disabled unless MINISEAL_OPEN_SIGNUP=true. In production a customer
-        gets keys from a real account (email check, login, dashboard)."""
+        Enabled with MINISEAL_OPEN_SIGNUP=true; otherwise keys are issued by an operator."""
         if not settings.open_signup:
-            # 404, as if the route didn't exist: nothing to probe when it's off.
+            # 404, as if the route didn't exist.
             raise HTTPException(status.HTTP_404_NOT_FOUND, "sign-up is disabled")
         try:
             key_id, key = keys.signup(body.owner)
         except OwnerTakenError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, "this name is taken") from exc
-        # The key is in this body: no browser or proxy may keep a copy.
-        response.headers["Cache-Control"] = "no-store"
+        response.headers["Cache-Control"] = "no-store"  # the body holds the key
         return SignupResponse(id=key_id, owner=body.owner, key=key)
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:
-        """Liveness: the process is up and answering. Checks nothing else on
-        purpose: a restart can't fix a missing key or a full disk, so this
-        must not fail for those (an orchestrator would restart in a loop)."""
+        """Liveness: the process is up. Deliberately checks nothing else, since
+        a restart can't fix a missing key and would only loop."""
         return {"status": "ok", "version": settings.version}
 
     @app.get("/ready", tags=["ops"], responses={503: {"description": "Not ready; see checks"}})
     def ready(response: Response, settings: Settings = Depends(get_settings)) -> dict:
-        """Readiness: can this instance actually serve seals right now?
-        Load balancers route traffic only to ready instances. The answer
-        names what failed, never secrets or file paths."""
+        """Readiness: can this instance serve seals now? Names what failed,
+        never secrets or file paths."""
         checks = {}
         try:
             checks["signing_key"] = f"ok ({load_signer(settings).key_id})"
@@ -372,7 +344,7 @@ def create_app() -> FastAPI:
             _store_for(settings.db_path).ping()
             _key_store_for(settings.db_path)
             checks["database"] = "ok"
-        except Exception as exc:  # any failure means "don't send me traffic"
+        except Exception as exc:
             log.exception("readiness: database check failed")
             checks["database"] = f"failed: {type(exc).__name__}"
         ok = all(v.startswith("ok") for v in checks.values())
@@ -395,8 +367,8 @@ def create_app() -> FastAPI:
         detector: Detector = Depends(get_detector),
     ) -> Response:
         data = await read_upload(file, settings)
-        # Decoding, hashing and PNG encoding are CPU-bound: run them off the
-        # event loop so one large image doesn't stall every other request.
+        # CPU-bound work runs off the event loop, so one large image doesn't
+        # stall every other request.
         sealed, payload, run = await run_in_threadpool(
             _seal_bytes, data, settings, signer, store, owner, detector
         )
@@ -405,7 +377,7 @@ def create_app() -> FastAPI:
             "X-Miniseal-Seal-Id": payload.seal_id,
             "X-Miniseal-Key-Id": payload.key_id,
         }
-        if verdict := run.verdict:  # the body is the image, so the verdict travels in headers
+        if verdict := run.verdict:  # the body is the image, so the verdict goes in headers
             score, label = verdict
             headers["X-Miniseal-Detector-Label"] = label
             headers["X-Miniseal-Detector-Score"] = repr(score)
@@ -413,7 +385,7 @@ def create_app() -> FastAPI:
 
     @app.get("/me", tags=["account"])
     def me(owner: str = Depends(get_owner)) -> dict:
-        """Who this API key belongs to. Lets the UI check a pasted key."""
+        """Who this API key belongs to."""
         return {"owner": owner}
 
     @app.get("/seals", tags=["seal"], response_model=list[SealInfo])
@@ -422,7 +394,7 @@ def create_app() -> FastAPI:
         store: SealStore = Depends(get_store),
         owner: str = Depends(get_owner),
     ) -> list[SealInfo]:
-        """Your own seals, newest first. Never anyone else's."""
+        """Your own seals, newest first."""
         return [SealInfo.from_record(r) for r in store.list_by_owner(owner, limit)]
 
     @app.get("/seals/{seal_id}", tags=["seal"], response_model=SealInfo)
@@ -431,13 +403,9 @@ def create_app() -> FastAPI:
         store: SealStore = Depends(get_store),
         owner: str = Depends(get_owner),
     ) -> SealInfo:
-        # Plain `def`: FastAPI runs it in the threadpool, so the blocking
-        # SQLite read doesn't stall the event loop.
         record = store.get(seal_id)
-        # Someone else's seal gets the SAME 404 as a missing one. A 403 would
-        # confirm "this seal exists, it just isn't yours". Anyone holding the
-        # image can still learn the owner through /verify: that's the point
-        # of a seal, and it needs the image, not just an id.
+        # Someone else's seal gets the same 404 as a missing one: a 403 would
+        # confirm it exists. (Anyone holding the image learns the owner via /verify.)
         if record is None or record.owner != owner:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no seal with this id")
         return SealInfo.from_record(record)
@@ -450,22 +418,20 @@ def create_app() -> FastAPI:
         store: SealStore = Depends(get_store),
         detector: Detector = Depends(get_detector),
     ) -> VerifyResponse:
-        # Always 200 for a verdict, tampered included: the request succeeded,
-        # the *image* failed. 4xx is kept for requests we couldn't evaluate.
+        # Every verdict is a 200, tampered included: the request worked, the
+        # image didn't. 4xx means we couldn't evaluate the request.
         data = await read_upload(file, settings)
 
         def check() -> tuple[VerifyResult, DetectorRun]:
-            img = decode_upload(data, settings)  # decoded once, used by both checks
-            digest = pixel_hash(img)  # hashed once, used by the seal check and the log
+            img = decode_upload(data, settings)
+            digest = pixel_hash(img)
             result = verify_image(img, signer, store, digest=digest)
             run = run_detector(detector, img, settings.detector_threshold)
-            # seal_id only when the seal is proven ours (result.record), so the
-            # log never links a run to a seal_id an attacker merely claimed.
+            # Link the log row only to a proven seal, never to a merely claimed seal_id.
             seal_id = result.record.seal_id if result.record else None
             _log_detection_best_effort(store, run, "verify", digest.hex(), seal_id)
             return result, run
 
-        # decode, hash and the model are CPU-bound: keep them off the event loop
         result, run = await run_in_threadpool(check)
         detector_info = None
         if verdict := run.verdict:

@@ -213,10 +213,9 @@ def test_seal_id_swapped_to_another_users_is_invalid_signature(signer, store):
 
 
 def test_same_image_relabelled_to_another_owner_is_invalid_signature(signer, store):
-    # The case the registry check alone could NOT catch: Alice and Bob seal
-    # the SAME picture, so both records hold the same pixel hash. With v1
-    # (hash-only signature), putting Bob's seal_id into Alice's copy passed
-    # every check and showed Bob as the owner. v2 binds the id to the signature.
+    # Alice and Bob seal the same picture, so both records hold the same hash
+    # and the registry alone can't tell them apart. Only because the seal_id
+    # is signed does swapping in Bob's id fail.
     same = photo((42, 42, 42))
     alice_png, alice = seal_and_register(signer, store, img=same, owner="alice")
     _, bob = seal_and_register(signer, store, img=same, owner="bob")

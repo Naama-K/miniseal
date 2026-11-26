@@ -65,9 +65,8 @@ class Server:
         for k in list(env):
             if k.startswith("MINISEAL_") and k not in self.env:
                 del env[k]
-        # Server output goes to a FILE, not a pipe: a pipe nobody reads fills
-        # up after a few tracebacks and the server then blocks on its next
-        # log line, i.e. hangs. (This harness did exactly that at first.)
+        # Server output goes to a file, not a pipe: a pipe nobody reads fills
+        # up after a few tracebacks and the server then hangs on its next log line.
         # Kept open for the server's lifetime and closed in stop(), so no `with`.
         self.log_file = open(self.workdir / "server.log", "ab")  # noqa: SIM115
         self.proc = subprocess.Popen(

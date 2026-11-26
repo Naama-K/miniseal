@@ -97,9 +97,8 @@ def test_bad_key_raises_clear_error(bad):
 
 
 # ---------- high bit depth (16-bit grayscale, 32-bit int, float) ----------
-# Regression: pixel_hash used to convert everything to 8-bit RGBA, which clips
-# every 16-bit value above 255 to 255. Changing 1000 -> 5000 left the hash
-# unchanged, so tampering with a sealed 16-bit PNG went undetected.
+# Converting to 8-bit RGBA would clip every 16-bit value above 255, so an
+# edit from 1000 to 5000 would leave the hash unchanged.
 
 WIDE_INT_MODES = ["I;16", "I;16B", "I;16L", "I;16N", "I"]
 
