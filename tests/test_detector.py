@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.crypto import generate_key_b64
 from app.detector import DummyDetector, Label, label_for, run_detector
 from app.main import create_app, get_detector
+from tests.conftest import keyed_client
 
 
 def photo(color=(10, 120, 200), mode="RGB", size=(16, 16)) -> Image.Image:
@@ -142,7 +143,7 @@ def make_client(tmp_path, detector=None, **settings_kw):
     app.dependency_overrides[get_settings] = lambda: settings
     if detector is not None:
         app.dependency_overrides[get_detector] = lambda: detector
-    return TestClient(app)
+    return keyed_client(app, settings.db_path)
 
 
 def upload(client, path, data):

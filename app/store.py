@@ -137,6 +137,44 @@ def _insert_detection(
     )
 
 
+@contextmanager
+def connect(path: Path) -> Iterator[sqlite3.Connection]:
+    """One short-lived connection: the only way this app talks to SQLite.
+
+    Shared by every store on the same file (seals, API keys), so all of them
+    get the same settings. Commits on success, rolls back on exception.
+    """
+    # timeout: wait for a concurrent writer instead of failing at once.
+    conn = sqlite3.connect(path, timeout=5)
+    # SQLite ignores REFERENCES unless this is switched on, per connection.
+    conn.execute("PRAGMA foreign_keys = ON")
+    # With WAL, NORMAL syncs to disk at checkpoints instead of every
+    # commit: much cheaper writes. A power cut can lose the last few
+    # commits but never corrupts the file. Per connection, like the above.
+    conn.execute("PRAGMA synchronous = NORMAL")
+    try:
+        with conn:  # commits on success, rolls back on exception
+            yield conn
+    finally:
+        conn.close()  # `with conn` alone does NOT close the connection
+
+
+def open_db(path: str | Path, schema: str) -> Path:
+    """Create the file's folder, switch on WAL and apply `schema` (idempotent)."""
+    path = Path(path)
+    # So a path like /data/miniseal.db works on a fresh Docker volume.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with connect(path) as conn:
+        # WAL (write-ahead log): readers no longer block the writer and the
+        # writer no longer blocks readers, so GET /seals and /verify lookups
+        # keep flowing while a seal is being written. It is a property of
+        # the file (it persists), so setting it on open is enough.
+        # Caveat: WAL needs a local filesystem, not a network share.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript(schema)
+    return path
+
+
 class SealStore:
     """Thin wrapper over one SQLite file.
 
@@ -146,33 +184,10 @@ class SealStore:
     """
 
     def __init__(self, path: str | Path):
-        self._path = Path(path)
-        # So a path like /data/miniseal.db works on a fresh Docker volume.
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            # WAL (write-ahead log): readers no longer block the writer and the
-            # writer no longer blocks readers, so GET /seals and /verify lookups
-            # keep flowing while a seal is being written. It is a property of
-            # the file (it persists), so setting it once here is enough.
-            # Caveat: WAL needs a local filesystem, not a network share.
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript(_SCHEMA)
+        self._path = open_db(path, _SCHEMA)
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        # timeout: wait for a concurrent writer instead of failing at once.
-        conn = sqlite3.connect(self._path, timeout=5)
-        # SQLite ignores REFERENCES unless this is switched on, per connection.
-        conn.execute("PRAGMA foreign_keys = ON")
-        # With WAL, NORMAL syncs to disk at checkpoints instead of every
-        # commit: much cheaper writes. A power cut can lose the last few
-        # commits but never corrupts the file. Per connection, like the above.
-        conn.execute("PRAGMA synchronous = NORMAL")
-        try:
-            with conn:  # commits on success, rolls back on exception
-                yield conn
-        finally:
-            conn.close()  # `with conn` alone does NOT close the connection
+    def _connect(self):
+        return connect(self._path)
 
     def add(self, record: SealRecord, run: DetectorRun | None = None) -> None:
         """Record a seal and, if given, the detector run made while sealing it.

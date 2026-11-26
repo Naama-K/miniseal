@@ -10,7 +10,8 @@ from PIL import Image, PngImagePlugin
 from app.config import Settings, get_settings
 from app.crypto import Signer, generate_key_b64, pixel_hash, seal_message
 from app.embed import extract, load_image
-from app.main import create_app, get_owner, get_store, sealed_filename
+from app.main import create_app, get_store, sealed_filename
+from tests.conftest import keyed_client
 
 
 def image_bytes(fmt="PNG", size=(16, 16), color=(10, 120, 200), **kw) -> bytes:
@@ -29,7 +30,7 @@ def make_client(tmp_path):
         settings = Settings(_env_file=None, **settings_overrides)
         app = create_app()
         app.dependency_overrides[get_settings] = lambda: settings
-        return TestClient(app)
+        return keyed_client(app, settings.db_path)
 
     return _make
 
@@ -156,7 +157,7 @@ def test_sealed_image_is_registered_and_retrievable(client):
     assert body["seal_id"] == payload.seal_id
     assert body["pixel_hash"] == payload.pixel_hash
     assert body["key_id"] == payload.key_id
-    assert body["owner"] == "anonymous"
+    assert body["owner"] == "alice"  # the owner of the API key used
     created = datetime.fromisoformat(body["created_at"])
     assert created.utcoffset() == timedelta(0)  # always UTC, with offset
     assert before <= created <= after
@@ -165,13 +166,6 @@ def test_sealed_image_is_registered_and_retrievable(client):
 
 def test_unknown_seal_id_is_404(client):
     assert client.get(f"/seals/{'0' * 32}").status_code == 404
-
-
-def test_owner_comes_from_the_owner_dependency(client):
-    # Task 7 swaps get_owner for an API-key lookup; this pins the wiring.
-    client.app.dependency_overrides[get_owner] = lambda: "alice"
-    seal_id = post(client, image_bytes()).headers["x-miniseal-seal-id"]
-    assert client.get(f"/seals/{seal_id}").json()["owner"] == "alice"
 
 
 def test_rejected_uploads_are_not_registered(client):
