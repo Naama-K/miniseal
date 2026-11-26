@@ -1,4 +1,5 @@
 """API keys: the key store, the 401s, owner-only reads, and the CLI."""
+
 import io
 
 import pytest
@@ -50,6 +51,7 @@ def verify(client, data):
 
 # ---------- key store ----------
 
+
 def test_created_key_identifies_its_owner(keys):
     key_id, key = keys.create("alice")
     assert key.startswith(KEY_PREFIX) and len(key) > 40
@@ -67,7 +69,7 @@ def test_only_the_hash_is_stored(db, keys):
     # With WAL, recent writes may still be in the -wal side file: scan both.
     raw = b"".join(p.read_bytes() for p in db.parent.glob(db.name + "*"))
     assert key.encode() not in raw
-    assert key[len(KEY_PREFIX):].encode() not in raw
+    assert key[len(KEY_PREFIX) :].encode() not in raw
     assert hash_key(key).encode() in raw
 
 
@@ -93,6 +95,7 @@ def test_owner_names_are_restricted(keys, owner):
 
 
 # ---------- 401 ----------
+
 
 @pytest.mark.parametrize("key", [None, "", "msk_wrong", "Bearer something"])
 def test_seal_without_a_valid_key_is_401(app, key):
@@ -138,6 +141,7 @@ def test_unauthenticated_seal_does_no_work(app, db):
 
 # ---------- owner ----------
 
+
 def test_seal_is_recorded_under_the_keys_owner(app, keys):
     alice = client_for(app, keys.create("alice")[1])
     seal_id = seal(alice).headers["x-miniseal-seal-id"]
@@ -173,6 +177,7 @@ def test_same_owner_with_a_second_key_can_read_their_seals(app, keys):
 
 # ---------- public endpoints ----------
 
+
 def test_health_and_verify_are_public(app, keys):
     sealed = seal(client_for(app, keys.create("alice")[1])).content
     anyone = client_for(app, None)
@@ -193,6 +198,7 @@ def test_seals_stay_valid_after_their_key_is_revoked(app, keys):
 
 
 # ---------- CLI ----------
+
 
 def test_cli_create_list_revoke(db, capsys):
     assert main(["--db", str(db), "create", "alice"]) == 0
@@ -216,6 +222,7 @@ def test_cli_rejects_a_bad_owner(db):
 
 
 # ---------- self-service sign-up ----------
+
 
 def signup_client(db, **kw):
     settings = Settings(_env_file=None, signing_key=generate_key_b64(), db_path=str(db), **kw)
@@ -282,6 +289,7 @@ def test_admin_can_still_add_a_key_for_an_existing_owner(keys):
 
 
 # ---------- /me and "my seals" ----------
+
 
 def test_me_needs_a_key(app, keys):
     assert client_for(app, None).get("/me").status_code == 401

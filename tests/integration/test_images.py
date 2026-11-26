@@ -1,4 +1,5 @@
 """Real-world files through the full HTTP path: what phones, editors and the web produce."""
+
 import io
 
 import pytest
@@ -25,7 +26,8 @@ def phone_jpeg_sideways() -> bytes:
 
 def palette_png() -> bytes:
     out = io.BytesIO()
-    Image.new("RGB", (32, 32), (10, 200, 90)).convert("P", palette=Image.Palette.ADAPTIVE).save(out, format="PNG")
+    rgb = Image.new("RGB", (32, 32), (10, 200, 90))
+    rgb.convert("P", palette=Image.Palette.ADAPTIVE).save(out, format="PNG")
     return out.getvalue()
 
 

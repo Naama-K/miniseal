@@ -1,4 +1,5 @@
 """The single-page UI is served, locked down, and talks to the API safely."""
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient

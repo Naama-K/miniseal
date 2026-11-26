@@ -1,4 +1,5 @@
 """Every verdict and every tampering reason, plus the /verify endpoint."""
+
 import dataclasses
 import io
 import json
@@ -17,8 +18,8 @@ from app.store import SealRecord, SealStore, utc_now
 from app.verify import Reason, Status, verify_image
 from tests.conftest import keyed_client
 
-
 # ---------- helpers ----------
+
 
 @pytest.fixture
 def signer() -> Signer:
@@ -76,6 +77,7 @@ def check(png: bytes, signer, store):
 
 # ---------- intact ----------
 
+
 def test_untouched_sealed_image_is_intact(signer, store):
     png, payload = seal_and_register(signer, store, owner="alice")
     result = check(png, signer, store)
@@ -105,6 +107,7 @@ def test_16bit_sealed_image_is_intact_and_high_value_edit_is_caught(signer, stor
 
 # ---------- unsealed ----------
 
+
 def test_plain_png_is_unsealed(signer, store):
     result = check(resave(photo(), None), signer, store)
     assert result.status == Status.UNSEALED
@@ -121,6 +124,7 @@ def test_converting_to_jpeg_strips_the_seal(signer, store):
 
 
 # ---------- tampered ----------
+
 
 def test_one_changed_pixel_is_pixels_modified_and_shows_original_owner(signer, store):
     png, payload = seal_and_register(signer, store, owner="alice")
@@ -251,6 +255,7 @@ def test_v1_seal_is_rejected_as_malformed(signer, store):
 
 
 # ---------- POST /verify ----------
+
 
 @pytest.fixture
 def client(tmp_path):

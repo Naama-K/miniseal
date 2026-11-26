@@ -1,4 +1,5 @@
 """FastAPI entrypoint."""
+
 import logging
 import re
 from datetime import datetime
@@ -10,16 +11,24 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.auth import OWNER_RE, ApiKeyStore, OwnerTakenError
 from app.config import Settings, get_settings
 from app.crypto import Signer, SigningKeyError, pixel_hash
 from app.detector import Detector, DetectorRun, DummyDetector, Label, run_detector
-from app.embed import ImageTooLargeError, InvalidImageError, has_seal_chunk, load_image, prepare_for_sealing
+from app.embed import (
+    ImageTooLargeError,
+    InvalidImageError,
+    SealPayload,
+    has_seal_chunk,
+    load_image,
+    prepare_for_sealing,
+)
 from app.seal import seal_image
-from app.store import SealRecord, SealStore, utc_now
-from app.verify import Reason, Status, verify_image
+from app.store import Context, SealRecord, SealStore, utc_now
+from app.verify import Reason, Status, VerifyResult, verify_image
 
 
 @lru_cache
@@ -88,7 +97,9 @@ def get_key_store(settings: Settings = Depends(get_settings)) -> ApiKeyStore:
 # auto_error=False: we raise our own 401 (FastAPI's default is 403, which
 # means "I know who you are and you may not", the wrong answer for "who are you?").
 # Declaring it with Security also adds the "Authorize" button to /docs.
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)")
+api_key_header = APIKeyHeader(
+    name="X-API-Key", auto_error=False, description="Your MiniSeal API key (msk_...)"
+)
 
 
 def get_owner(
@@ -135,7 +146,7 @@ class SealInfo(BaseModel):
     detector_at_seal: DetectionAtSeal | None = None
 
     @classmethod
-    def from_record(cls, record: SealRecord) -> "SealInfo":
+    def from_record(cls, record: SealRecord) -> SealInfo:
         d = record.detection
         return cls(
             seal_id=record.seal_id,
@@ -199,7 +210,7 @@ async def read_upload(file: UploadFile, settings: Settings) -> bytes:
     return data
 
 
-def decode_upload(data: bytes, settings: Settings):
+def decode_upload(data: bytes, settings: Settings) -> Image.Image:
     """Bytes -> decoded image, translating failures into 413 / 400."""
     try:
         return load_image(data, max_pixels=settings.max_image_pixels)
@@ -212,7 +223,9 @@ def decode_upload(data: bytes, settings: Settings):
 log = logging.getLogger(__name__)
 
 
-def _log_detection_best_effort(store: SealStore, run: DetectorRun, context, pixel_hash_hex, seal_id=None):
+def _log_detection_best_effort(
+    store: SealStore, run: DetectorRun, context: Context, pixel_hash_hex: str, seal_id: str | None = None
+) -> None:
     """Analytics, not part of the answer: a failed log write must never fail
     the request. (Seal-time runs are NOT written this way: see store.add.)"""
     try:
@@ -245,7 +258,7 @@ def _check_seal_policy(run: DetectorRun, settings: Settings) -> None:
 
 def _seal_bytes(
     data: bytes, settings: Settings, signer: Signer, store: SealStore, owner: str, detector: Detector
-):
+) -> tuple[bytes, SealPayload, DetectorRun]:
     """Upload bytes -> (sealed PNG, payload, detector run). Runs in the threadpool."""
     img = decode_upload(data, settings)
 
@@ -392,9 +405,10 @@ def create_app() -> FastAPI:
             "X-Miniseal-Seal-Id": payload.seal_id,
             "X-Miniseal-Key-Id": payload.key_id,
         }
-        if run.ok:  # the body is the image, so the verdict travels in headers
-            headers["X-Miniseal-Detector-Label"] = run.label
-            headers["X-Miniseal-Detector-Score"] = repr(run.score)
+        if verdict := run.verdict:  # the body is the image, so the verdict travels in headers
+            score, label = verdict
+            headers["X-Miniseal-Detector-Label"] = label
+            headers["X-Miniseal-Detector-Score"] = repr(score)
         return Response(content=sealed, media_type="image/png", headers=headers)
 
     @app.get("/me", tags=["account"])
@@ -440,7 +454,7 @@ def create_app() -> FastAPI:
         # the *image* failed. 4xx is kept for requests we couldn't evaluate.
         data = await read_upload(file, settings)
 
-        def check():
+        def check() -> tuple[VerifyResult, DetectorRun]:
             img = decode_upload(data, settings)  # decoded once, used by both checks
             digest = pixel_hash(img)  # hashed once, used by the seal check and the log
             result = verify_image(img, signer, store, digest=digest)
@@ -453,15 +467,15 @@ def create_app() -> FastAPI:
 
         # decode, hash and the model are CPU-bound: keep them off the event loop
         result, run = await run_in_threadpool(check)
+        detector_info = None
+        if verdict := run.verdict:
+            score, label = verdict
+            detector_info = DetectorInfo(model=run.model, score=score, label=label, latency_ms=run.latency_ms)
         return VerifyResponse(
             status=result.status,
             reason=result.reason,
             seal=SealInfo.from_record(result.record) if result.record else None,
-            detector=(
-                DetectorInfo(model=run.model, score=run.score, label=run.label, latency_ms=run.latency_ms)
-                if run.ok
-                else None
-            ),
+            detector=detector_info,
         )
 
     return app

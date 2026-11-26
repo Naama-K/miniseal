@@ -1,7 +1,8 @@
 """The detections table, the verdict recorded at sealing time, and the seal policy."""
+
 import io
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,12 +43,16 @@ def seal(client, data=None):
 
 
 def rows(db, table="seals") -> int:
+    # A table name can't be a ? placeholder, so it goes into the SQL text:
+    # allow only known names, never arbitrary input.
+    if table not in ("seals", "detections"):
+        raise ValueError(f"unknown table {table!r}")
     with sqlite3.connect(db) as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
 
 
 def record(seal_id="a" * 32, pixel_hash="ab" * 32) -> SealRecord:
-    return SealRecord(seal_id, pixel_hash, "k", "alice", datetime.now(timezone.utc))
+    return SealRecord(seal_id, pixel_hash, "k", "alice", datetime.now(UTC))
 
 
 def a_run(detector=None, threshold=0.5):
@@ -56,6 +61,7 @@ def a_run(detector=None, threshold=0.5):
 
 # ---------- store: detections table ----------
 
+
 def test_seal_and_its_detection_are_written_together(db):
     store = SealStore(db)
     store.add(record(), a_run(FixedDetector(0.25, name="m")))
@@ -63,7 +69,12 @@ def test_seal_and_its_detection_are_written_together(db):
     assert store.get("a" * 32).detection == RecordedDetection("m", 0.25, "likely_real", 0.5)
     (row,) = store.detections(seal_id="a" * 32)
     assert (row.context, row.pixel_hash, row.model, row.score, row.label) == (
-        "seal", "ab" * 32, "m", 0.25, "likely_real")
+        "seal",
+        "ab" * 32,
+        "m",
+        0.25,
+        "likely_real",
+    )
     assert (row.threshold, row.error) == (0.5, None) and row.latency_ms >= 0
 
 
@@ -125,6 +136,7 @@ def test_database_from_an_earlier_version_still_works(db):
 
 # ---------- policy "always" (default) ----------
 
+
 def test_default_policy_is_always():
     assert Settings(_env_file=None).seal_policy == "always"
 
@@ -170,6 +182,7 @@ def test_verify_shows_both_the_verdict_at_seal_and_now(db):
 
 
 # ---------- policy "reject_suspicious" ----------
+
 
 def test_reject_policy_refuses_suspicious_images(db):
     client = make_client(db, detector=FixedDetector(0.9, name="m1"), seal_policy="reject_suspicious")
@@ -221,6 +234,7 @@ def test_already_sealed_check_runs_before_the_detector(db):
 
 # ---------- /verify logging ----------
 
+
 def verify(client, data):
     return client.post("/verify", files={"file": ("x.png", data, "image/png")})
 
@@ -251,8 +265,14 @@ def test_forged_seal_id_is_not_linked_in_the_log(db):
     client = make_client(db)
     seal(client)
     real_id = SealStore(db).detections(context="seal")[0].seal_id
-    fake = {"v": 2, "alg": "Ed25519", "seal_id": real_id, "pixel_hash": "00" * 32,
-            "signature": "AAAA", "key_id": "x"}
+    fake = {
+        "v": 2,
+        "alg": "Ed25519",
+        "seal_id": real_id,
+        "pixel_hash": "00" * 32,
+        "signature": "AAAA",
+        "key_id": "x",
+    }
     info = PngImagePlugin.PngInfo()
     info.add_itxt("miniseal", json.dumps(fake))
     out = io.BytesIO()

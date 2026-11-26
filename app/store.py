@@ -22,17 +22,18 @@ Why plain sqlite3 and not an ORM?
 Two tables, a handful of queries. The standard library is enough, adds no
 dependency, and the SQL is short enough to read in an interview.
 """
+
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from app.detector import DetectorRun
+from app.detector import DetectorRun, Label
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS seals (
@@ -71,7 +72,7 @@ class RecordedDetection:
 
     model: str
     score: float
-    label: str
+    label: Label  # checked on read: an unknown value in the DB fails here
     threshold: float
 
 
@@ -105,11 +106,11 @@ class DetectionRow:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
+    return dt.astimezone(UTC).isoformat()
 
 
 def _insert_detection(
@@ -187,7 +188,7 @@ class SealStore:
     def __init__(self, path: str | Path):
         self._path = open_db(path, _SCHEMA)
 
-    def _connect(self):
+    def _connect(self) -> AbstractContextManager[sqlite3.Connection]:
         return connect(self._path)
 
     def ping(self) -> None:
@@ -237,7 +238,7 @@ class SealStore:
             key_id,
             owner,
             datetime.fromisoformat(created_at),
-            RecordedDetection(*det) if det else None,
+            RecordedDetection(det[0], det[1], Label(det[2]), det[3]) if det else None,
         )
 
     def list_by_owner(self, owner: str, limit: int = 50) -> list[SealRecord]:
@@ -256,14 +257,14 @@ class SealStore:
 
     def detections(self, seal_id: str | None = None, context: Context | None = None) -> list[DetectionRow]:
         """Detector runs, oldest first, optionally filtered. For tests and analysis."""
-        sql, args = "SELECT * FROM detections WHERE 1 = 1", []
+        sql = "SELECT * FROM detections WHERE 1 = 1"
+        args: list[str] = []
         if seal_id is not None:
-            sql, args = sql + " AND seal_id = ?", [*args, seal_id]
+            sql += " AND seal_id = ?"
+            args.append(seal_id)
         if context is not None:
-            sql, args = sql + " AND context = ?", [*args, context]
+            sql += " AND context = ?"
+            args.append(context)
         with self._connect() as conn:
             rows = conn.execute(sql + " ORDER BY id", args).fetchall()
-        return [
-            DetectionRow(r[0], datetime.fromisoformat(r[1]), *r[2:])
-            for r in rows
-        ]
+        return [DetectionRow(r[0], datetime.fromisoformat(r[1]), *r[2:]) for r in rows]

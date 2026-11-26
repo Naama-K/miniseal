@@ -5,6 +5,7 @@ real deployment goes through: config from environment variables, uvicorn's
 HTTP parsing, a real socket, and a process that can be stopped and started
 again against the same database file (what the Docker volume relies on).
 """
+
 import io
 import os
 import socket
@@ -22,7 +23,6 @@ from app.crypto import generate_key_b64
 from app.embed import CHUNK_KEY
 
 ROOT = Path(__file__).parents[2]
-
 
 
 def pytest_collection_modifyitems(items):
@@ -54,7 +54,7 @@ class Server:
     def db(self) -> Path:
         return Path(self.env["MINISEAL_DB_PATH"])
 
-    def start(self, **env_overrides) -> "Server":
+    def start(self, **env_overrides) -> Server:
         self.env.update({k: v for k, v in env_overrides.items() if v is not None})
         for k in [k for k, v in env_overrides.items() if v is None]:
             self.env.pop(k, None)  # None = unset this variable
@@ -68,7 +68,8 @@ class Server:
         # Server output goes to a FILE, not a pipe: a pipe nobody reads fills
         # up after a few tracebacks and the server then blocks on its next
         # log line, i.e. hangs. (This harness did exactly that at first.)
-        self.log_file = open(self.workdir / "server.log", "ab")
+        # Kept open for the server's lifetime and closed in stop(), so no `with`.
+        self.log_file = open(self.workdir / "server.log", "ab")  # noqa: SIM115
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--log-level", "warning"],
             cwd=self.workdir,  # a clean folder: no developer .env is read
@@ -105,7 +106,7 @@ class Server:
         """The server's output so far: for failure messages and log assertions."""
         return (self.workdir / "server.log").read_text(encoding="utf-8", errors="replace")
 
-    def restart(self, **env_overrides) -> "Server":
+    def restart(self, **env_overrides) -> Server:
         self.stop()
         return self.start(**env_overrides)
 
@@ -116,7 +117,10 @@ class Server:
         """Run the admin CLI against this server's database, as an operator would."""
         return subprocess.run(
             [sys.executable, "-m", "app.auth", "--db", str(self.db), *args],
-            cwd=ROOT, capture_output=True, text=True, timeout=30,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
 
@@ -135,6 +139,7 @@ def server(tmp_path):
 
 
 # ---------- helpers shared by the integration tests ----------
+
 
 def image_bytes(fmt="PNG", size=(64, 48), color=(30, 120, 200), mode="RGB", **save_kw) -> bytes:
     out = io.BytesIO()

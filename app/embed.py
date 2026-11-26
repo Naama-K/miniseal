@@ -13,6 +13,7 @@ Design
   many editors) removes the chunk and the image then reads as unsealed.
   Surviving that needs a watermark inside the pixels.
 """
+
 from __future__ import annotations
 
 import io
@@ -56,7 +57,7 @@ class SealPayload:
         return json.dumps(asdict(self), separators=(",", ":"), sort_keys=True)
 
     @classmethod
-    def from_json(cls, raw: str) -> "SealPayload":
+    def from_json(cls, raw: str) -> SealPayload:
         try:
             data = json.loads(raw)
             if data.get("v") != PAYLOAD_VERSION or data.get("alg") != ALGORITHM:

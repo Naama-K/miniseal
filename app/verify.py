@@ -26,6 +26,7 @@ The checks, in order (the first failure is the reason reported):
                        then we know which record the seal belongs to, so the answer
                        can say who sealed the original.
 """
+
 from __future__ import annotations
 
 import base64
@@ -90,7 +91,7 @@ def verify_image(
         if not isinstance(seal_id, str):
             raise TypeError("seal_id must be a string")
         message = seal_message(seal_id, claimed)  # non-ASCII id / wrong hash size: ValueError
-    except (binascii.Error, ValueError, TypeError):
+    except binascii.Error, ValueError, TypeError:
         return _tampered(Reason.MALFORMED_SEAL)
 
     if payload.key_id != signer.key_id:

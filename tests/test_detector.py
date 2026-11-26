@@ -1,9 +1,9 @@
 """The detector interface, the dummy, labelling policy, and /verify wiring."""
+
 import io
 import math
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import ValidationError
 
@@ -43,6 +43,7 @@ class CrashingDetector:
 
 # ---------- the dummy ----------
 
+
 def test_dummy_is_deterministic_and_in_range():
     d = DummyDetector()
     scores = {d.score(photo()) for _ in range(3)}
@@ -76,6 +77,7 @@ def test_dummy_handles_other_modes(mode, color):
 
 # ---------- labelling policy ----------
 
+
 @pytest.mark.parametrize(
     "score, threshold, label",
     [
@@ -98,6 +100,7 @@ def test_threshold_setting_must_be_in_range(bad):
 
 
 # ---------- run_detector ----------
+
 
 def test_run_detector_reports_model_score_label_threshold_and_latency():
     det = run_detector(FixedDetector(0.8, name="m1"), photo(), threshold=0.5)
@@ -135,6 +138,7 @@ def test_out_of_range_score_is_a_failed_run(value):
 
 # ---------- /verify ----------
 
+
 def make_client(tmp_path, detector=None, **settings_kw):
     settings = Settings(
         _env_file=None, signing_key=generate_key_b64(), db_path=str(tmp_path / "d.db"), **settings_kw
@@ -168,7 +172,10 @@ def test_sealing_does_not_change_the_detector_score(tmp_path):
     client = make_client(tmp_path)
     original = png(photo())
     sealed = upload(client, "/seal", original).content
-    score = lambda d: upload(client, "/verify", d).json()["detector"]["score"]
+
+    def score(data):
+        return upload(client, "/verify", data).json()["detector"]["score"]
+
     assert score(original) == score(sealed)
 
 
@@ -193,3 +200,9 @@ def test_detector_failure_keeps_the_seal_verdict(tmp_path):
     assert resp.status_code == 200
     assert resp.json()["status"] == "sealed_intact"
     assert resp.json()["detector"] is None
+
+
+def test_verdict_is_score_and_label_only_for_a_successful_run():
+    good = run_detector(FixedDetector(0.8), photo(), 0.5)
+    assert good.verdict == (0.8, Label.SUSPICIOUS)
+    assert run_detector(CrashingDetector(), photo(), 0.5).verdict is None

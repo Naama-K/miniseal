@@ -1,7 +1,7 @@
 import base64
 import io
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,6 +51,7 @@ def post(client, data: bytes, filename="photo.png", content_type="image/png"):
 
 # ---------- happy path ----------
 
+
 @pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
 def test_seal_returns_verifiable_png(client, key, fmt):
     resp = post(client, image_bytes(fmt), filename=f"photo.{fmt.lower()}")
@@ -98,6 +99,7 @@ def test_sealed_filename_is_header_safe(original, expected):
 
 # ---------- rejections ----------
 
+
 def test_missing_key_is_503_and_health_still_works(make_client):
     client = make_client(signing_key=None)
     resp = post(client, image_bytes())
@@ -139,6 +141,7 @@ def test_malformed_seal_chunk_is_409(client):
 
 # ---------- registry: GET /seals/{id} ----------
 
+
 def db_rows(client) -> int:
     path = client.app.dependency_overrides[get_settings]().db_path
     with sqlite3.connect(path) as conn:
@@ -146,9 +149,9 @@ def db_rows(client) -> int:
 
 
 def test_sealed_image_is_registered_and_retrievable(client):
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     resp = post(client, image_bytes())
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     payload = extract(load_image(resp.content))
 
     info = client.get(f"/seals/{payload.seal_id}")

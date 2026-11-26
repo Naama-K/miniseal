@@ -1,4 +1,5 @@
 """Shared test helpers."""
+
 from fastapi.testclient import TestClient
 
 from app.auth import ApiKeyStore

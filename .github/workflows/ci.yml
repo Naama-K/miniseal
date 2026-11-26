@@ -1,0 +1,112 @@
+# CI: every push to main and every pull request must pass all of this.
+# Each job runs commands you can run locally too (see the README).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # run by hand from the Actions tab
+
+# Least privilege: CI only reads the code. (Supply-chain hardening for
+# later: pin each action to a commit SHA instead of a version tag.)
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run that's now out of date.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.14"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: ruff (lint)
+        run: ruff check --output-format=github .
+      - name: ruff (format)
+        run: ruff format --check .
+      - name: mypy
+        run: mypy
+
+  test:
+    name: Tests (${{ matrix.suite }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false  # see every failing combination, not just the first
+      matrix:
+        # Linux is where it runs in production; Windows is where it's developed
+        # (line endings, paths and subprocess pipes have already differed).
+        os: [ubuntu-latest, windows-latest]
+        suite: [fast, integration]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: pytest
+        shell: bash
+        run: |
+          if [ "${{ matrix.suite }}" = fast ]; then
+            python -m pytest -m "not integration" -q
+          else
+            python -m pytest -m integration -q
+          fi
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start (waits until the healthcheck says healthy)
+        run: docker compose up --build --detach --wait --wait-timeout 120
+      - name: Smoke test over HTTP
+        run: python3 scripts/smoke_test.py http://localhost:8000
+      - name: Runs as a non-root user
+        run: test "$(docker compose exec -T miniseal id -u)" != "0"
+      - name: Root filesystem is read-only
+        run: "! docker compose exec -T miniseal touch /app/probe"
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+      - name: Clean up
+        if: always()
+        run: docker compose down --volumes
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # scan the whole history, not just the last commit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Known vulnerabilities in dependencies (pip-audit)
+        run: |
+          pip install pip-audit==2.10.1
+          pip-audit --strict -r requirements.txt
+      - name: Committed secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
