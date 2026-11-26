@@ -11,9 +11,11 @@ pixel changes, which is exactly the property we want.
 """
 from __future__ import annotations
 
+import array
 import base64
 import hashlib
 import struct
+import sys
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -27,9 +29,46 @@ from PIL import Image
 # old and new hashes can never be confused with each other.
 HASH_DOMAIN = b"miniseal/pixels/v1"
 
-# All images are normalized to one mode before hashing, so the same visible
-# picture gives the same hash whether it was loaded as RGB, P (palette) or L.
+# All 8-bit images are normalized to one mode before hashing, so the same
+# visible picture gives the same hash whether it was loaded as RGB, P or L.
 CANONICAL_MODE = "RGBA"
+
+# High-bit-depth images can NOT go through RGBA: Pillow clips every value above
+# 255 to 255, so a 16-bit pixel changed from 1000 to 5000 would hash the same
+# and tampering would go undetected. They are hashed at native precision under
+# a separate domain instead. The domain differs from HASH_DOMAIN early
+# ("wide-" vs "pixels"), so an 8-bit and a wide byte stream can never collide.
+WIDE_HASH_DOMAIN = b"miniseal/wide-pixels/v1:"
+
+# Integer modes Pillow widens to 32-bit "I" losslessly. All of them hash as
+# int32, so a 16-bit PNG gives the same hash whether a Pillow version decodes
+# it as "I;16" or as "I".
+_WIDENABLE_INT_MODES = {"I;16", "I;16B", "I;16L", "I"}
+# Pillow 12 clips I;16N to 255 when converting to "I" (verified), so its values
+# are read one by one instead. It never comes out of a PNG decoder; rare path.
+_SLOW_INT_MODES = {"I;16N"}
+
+
+def _be_bytes(samples: array.array) -> bytes:
+    """Fixed big-endian byte order, so the hash doesn't depend on the CPU."""
+    if sys.byteorder == "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+def _wide_canonical(image: Image.Image) -> tuple[bytes, bytes] | None:
+    """(format tag, big-endian samples) for wide modes; None for 8-bit modes."""
+    if image.mode in _WIDENABLE_INT_MODES:
+        samples = array.array("i")  # 4-byte signed int on all supported platforms
+        samples.frombytes(image.convert("I").tobytes("raw", "I"))  # C speed
+        return b"i32", _be_bytes(samples)
+    if image.mode in _SLOW_INT_MODES:
+        return b"i32", _be_bytes(array.array("i", image.get_flattened_data()))
+    if image.mode == "F":
+        samples = array.array("f")  # Pillow "F" is float32: lossless
+        samples.frombytes(image.tobytes("raw", "F"))
+        return b"f32", _be_bytes(samples)
+    return None
 
 
 def pixel_hash(image: Image.Image) -> bytes:
@@ -38,12 +77,20 @@ def pixel_hash(image: Image.Image) -> bytes:
     The image size is part of the hash: without it, a 2x8 and a 4x4 image with
     the same pixel bytes would collide.
     """
-    canonical = image.convert(CANONICAL_MODE)
-    width, height = canonical.size
+    width, height = image.size
+    size = struct.pack(">II", width, height)  # fixed-width, big-endian
     h = hashlib.sha256()
-    h.update(HASH_DOMAIN)
-    h.update(struct.pack(">II", width, height))  # fixed-width, big-endian
-    h.update(canonical.tobytes())
+
+    wide = _wide_canonical(image)
+    if wide is None:
+        h.update(HASH_DOMAIN)
+        h.update(size)
+        h.update(image.convert(CANONICAL_MODE).tobytes())
+    else:
+        fmt, samples = wide
+        h.update(WIDE_HASH_DOMAIN + fmt + b"\x00")  # NUL ends the tag unambiguously
+        h.update(size)
+        h.update(samples)
     return h.digest()
 
 

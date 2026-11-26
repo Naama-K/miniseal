@@ -85,3 +85,66 @@ def test_same_key_loads_same_public_key():
 def test_bad_key_raises_clear_error(bad):
     with pytest.raises(SigningKeyError):
         Signer.from_b64(bad)
+
+
+# ---------- high bit depth (16-bit grayscale, 32-bit int, float) ----------
+# Regression: pixel_hash used to convert everything to 8-bit RGBA, which clips
+# every 16-bit value above 255 to 255. Changing 1000 -> 5000 left the hash
+# unchanged, so tampering with a sealed 16-bit PNG went undetected.
+
+WIDE_INT_MODES = ["I;16", "I;16B", "I;16L", "I;16N", "I"]
+
+
+def wide(mode: str, value, size=(4, 4), changed_pixel=None) -> Image.Image:
+    img = Image.new(mode, size, value)
+    if changed_pixel is not None:
+        img.putpixel((1, 2), changed_pixel)
+    return img
+
+
+@pytest.mark.parametrize("mode", WIDE_INT_MODES)
+@pytest.mark.parametrize("new_value", [1001, 5000, 65535, 256])
+def test_wide_pixel_change_above_255_changes_hash(mode, new_value):
+    assert pixel_hash(wide(mode, 1000)) != pixel_hash(wide(mode, 1000, changed_pixel=new_value))
+
+
+@pytest.mark.parametrize("mode", WIDE_INT_MODES)
+def test_wide_images_with_different_bright_values_do_not_collide(mode):
+    assert pixel_hash(wide(mode, 300)) != pixel_hash(wide(mode, 60000))
+
+
+def test_float_image_change_changes_hash():
+    assert pixel_hash(wide("F", 1.5)) != pixel_hash(wide("F", 1.5, changed_pixel=1.25))
+
+
+@pytest.mark.parametrize("mode", WIDE_INT_MODES)
+def test_integer_modes_with_same_values_hash_the_same(mode):
+    """Like 8-bit mode normalization: a 16-bit PNG may decode as I;16 in one
+    Pillow version and as I in another. Same values must give the same hash."""
+    assert pixel_hash(wide(mode, 1234)) == pixel_hash(wide("I", 1234))
+
+
+def test_8bit_and_wide_encodings_never_collide():
+    """Value 255 as 8-bit L and as 16-bit must not hash equal: they are
+    hashed under different domains, so the byte streams can't be confused."""
+    assert pixel_hash(Image.new("L", (4, 4), 255)) != pixel_hash(wide("I;16", 255))
+
+
+def test_16bit_png_roundtrip_keeps_hash():
+    """What we seal is what a verifier decodes: 16-bit survives PNG losslessly."""
+    img = wide("I;16", 1000, changed_pixel=40000)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    assert pixel_hash(Image.open(buf)) == pixel_hash(img)
+
+
+def test_8bit_hash_unchanged_by_this_fix():
+    """Existing 8-bit hashes must stay byte-identical (no silent re-hash)."""
+    import hashlib
+    import struct
+
+    img = Image.new("RGB", (2, 1), (1, 2, 3))
+    expected = hashlib.sha256(
+        b"miniseal/pixels/v1" + struct.pack(">II", 2, 1) + img.convert("RGBA").tobytes()
+    ).digest()
+    assert pixel_hash(img) == expected
